@@ -1,0 +1,65 @@
+{
+  "createdAt": "2026-11-22T04:46:28.839Z",
+  "purpose": "Pre-clean-start verifiable backup before removing all 24 demo/test companies, 79 non-master users, sessions and operational/commercial test data",
+  "files": {
+    "db.json": {
+      "bytes": 863644,
+      "sha256": "4853195c6d02942f42d4b70ac07bb9edfe997aa1824ce6e502fd51f90e96068a"
+    },
+    "sessions.json": {
+      "bytes": 19225,
+      "sha256": "c1a027d958040bd4cdf1c079ff324141fabd86905bf5fff62a7b35129f90adf7"
+    }
+  },
+  "counts": {
+    "users": 80,
+    "companies": 24,
+    "plans": 5,
+    "auditLogs": 599,
+    "sessions": 119,
+    "payments": 0,
+    "logisticsReceipts": 0,
+    "inventory": 0,
+    "stockMovements": 0,
+    "shipments": 0,
+    "deliveries": 95,
+    "vehicles": 1,
+    "routes": 22,
+    "condoUnits": 8,
+    "condoPackages": 9,
+    "condoVisitors": 0,
+    "fiscalConfigs": 0,
+    "fiscalDocuments": 0,
+    "financialRecords": 0,
+    "notifications": 5,
+    "commercialProducts": 20,
+    "commercialStockMovements": 59,
+    "commercialSales": 23,
+    "commercialCashSessions": 22,
+    "commercialSuppliers": 8,
+    "commercialPurchases": 8,
+    "pixCharges": 4,
+    "commercialTerminals": 0,
+    "commercialTerminalTransactions": 0,
+    "preventionDismissedAlerts": 10,
+    "warehouses": 10,
+    "warehouseTransfers": 5,
+    "warehouseAudits": 5,
+    "fulfillmentOrders": 6,
+    "pickingTasks": 6,
+    "packingTasks": 6,
+    "reverseLogistics": 6,
+    "carrierPartners": 0,
+    "b2bClients": 0,
+    "b2bCollections": 0,
+    "shippingManifests": 6,
+    "aiInsights": 0
+  },
+  "masterOwner": {
+    "id": "312f0489-d5ba-4a34-b493-4ffe7318cf2e",
+    "email": "Alifermadeiro@hotmail.com",
+    "role": "master_owner",
+    "passwordHashSha256_12": "c0a3ee1bc59b",
+    "saltSha256_12": "346cfe07d775"
+  }
+}
