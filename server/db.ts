@@ -7,6 +7,21 @@ import {
   isPostgresActive,
   pgRepo,
 } from './persistence/repository.ts';
+import {
+  ORIGINAL_MASTER_OWNER_ID,
+  ORIGINAL_MASTER_OWNER_EMAIL,
+  getOfficialMasterEmailNormalized,
+  isOfficialMasterOwner,
+  assertMasterOwnerSingleton,
+} from './masterSingleton.ts';
+
+export {
+  ORIGINAL_MASTER_OWNER_ID,
+  ORIGINAL_MASTER_OWNER_EMAIL,
+  getOfficialMasterEmailNormalized,
+  isOfficialMasterOwner,
+  assertMasterOwnerSingleton,
+};
 
 const DATA_DIR = process.env.MOVILOG_DATA_DIR
   ? path.resolve(process.env.MOVILOG_DATA_DIR)
@@ -526,6 +541,14 @@ export interface NotificationItem {
 // Adega & Tabacaria Commercial Models
 // ==========================================
 
+export interface CommercialProductCostEntry {
+  custo: number;
+  data: string;
+  fornecedorId?: string;
+  fornecedorNome?: string;
+  motivo?: string;
+}
+
 export interface CommercialProduct {
   id: string;
   companyId: string;
@@ -540,12 +563,16 @@ export interface CommercialProduct {
   fornecedorId?: string;
   fornecedorNome?: string;
   precoCusto: number;
+  custoAnterior?: number;
+  custoHistorico?: CommercialProductCostEntry[];
   precoVenda: number;
   estoqueAtual: number;
   estoqueMinimo: number;
+  estoqueMaximo?: number;
   unidade: string;
   fotoUrl?: string;
   idadeMinima: number;
+  origemRegistro?: 'manual' | 'importado_espelho' | 'migrado' | 'exemplo';
   ativo: boolean;
   criadoEm: string;
   atualizadoEm: string;
@@ -561,10 +588,12 @@ export interface CommercialStockMovement {
   quantidade: number;
   quantidadeAnterior: number;
   quantidadeNova: number;
+  custoUnitarioNoMovimento?: number;
   motivo: string;
   usuarioId: string;
   usuarioNome: string;
   referenciaId?: string;
+  origemRegistro?: 'manual' | 'importado_espelho' | 'migrado' | 'sistema';
   criadoEm: string;
 }
 
@@ -626,6 +655,7 @@ export interface CommercialSale {
     terminalNome?: string;
     [key: string]: any;
   };
+  origemRegistro?: 'pdv' | 'pedido' | 'importado_espelho';
   idempotencyKey?: string;
 }
 
@@ -702,9 +732,13 @@ export interface CommercialSupplier {
   email: string;
   endereco?: string;
   segmento: 'adega' | 'tabacaria' | 'ambos';
+  prazoEntregaDias?: number;
+  condicaoPagamento?: string;
   observacoes?: string;
+  origemRegistro?: 'manual' | 'importado_espelho' | 'migrado';
   ativo: boolean;
   criadoEm: string;
+  atualizadoEm?: string;
 }
 
 export interface CommercialPurchaseItem {
@@ -720,15 +754,312 @@ export interface CommercialPurchase {
   companyId: string;
   fornecedorId: string;
   fornecedorNome: string;
+  modulo?: 'adega' | 'tabacaria' | 'ambos';
   numeroNota?: string;
   dataCompra: string;
   dataRecebimento?: string;
-  status: 'pendente' | 'recebido' | 'cancelado';
+  status: 'rascunho' | 'aprovada' | 'pendente' | 'recebido' | 'cancelado';
+  sugestaoReposicaoId?: string;
   itens: CommercialPurchaseItem[];
   valorTotal: number;
   formaPagamento?: string;
   observacoes?: string;
   criadoEm: string;
+}
+
+// ==========================================
+// ADEGA & TABACARIA — 4 FASES DE EVOLUÇÃO
+// ==========================================
+
+export type CommercialAlertPriority = 'baixa' | 'media' | 'alta' | 'critica';
+export type CommercialAlertCategory =
+  | 'ruptura_estoque'
+  | 'estoque_baixo'
+  | 'produto_parado'
+  | 'divergencia_estoque'
+  | 'alta_custo_fornecedor'
+  | 'pedido_pendente'
+  | 'entrega_pendente'
+  | 'perda_recorrente';
+
+export interface CommercialAlert {
+  id: string;
+  companyId: string;
+  alertKey: string;
+  modulo: 'adega' | 'tabacaria' | 'ambos';
+  categoria: CommercialAlertCategory;
+  prioridade: CommercialAlertPriority;
+  titulo: string;
+  descricao: string;
+  acaoRecomendada: string;
+  rotaSugerida: string;
+  referenciaTipo: 'product' | 'order' | 'purchase' | 'inventory' | 'loss';
+  referenciaId: string;
+  status: 'ativo' | 'resolvido';
+  resolvidoEm?: string;
+  resolvidoPorId?: string;
+  resolvidoPorNome?: string;
+  motivoResolucao?: string;
+  criadoEm: string;
+}
+
+export interface CommercialReplenishment {
+  id: string;
+  companyId: string;
+  modulo: 'adega' | 'tabacaria';
+  productId: string;
+  productNome: string;
+  sku: string;
+  estoqueAtual: number;
+  estoqueMinimo: number;
+  estoqueMaximo: number;
+  consumoMedioDiario: number | null;
+  coberturaDiasEstimada: number | null;
+  quantidadeSugerida: number;
+  quantidadeAprovada?: number;
+  custoUnitarioEstimado: number;
+  custoTotalEstimado: number;
+  justificativa: string;
+  fornecedorId?: string;
+  fornecedorNome?: string;
+  status: 'pendente' | 'aprovada' | 'pedido_gerado' | 'descartada';
+  purchaseId?: string;
+  revisadoPorId?: string;
+  revisadoPorNome?: string;
+  revisadoEm?: string;
+  observacoes?: string;
+  criadoEm: string;
+}
+
+export type CommercialLossReason = 'avaria' | 'vencimento' | 'consumo_interno' | 'descarte' | 'extravio';
+
+export interface CommercialLoss {
+  id: string;
+  companyId: string;
+  modulo: 'adega' | 'tabacaria';
+  productId: string;
+  productNome: string;
+  sku: string;
+  tipo: CommercialLossReason;
+  quantidade: number;
+  custoUnitario: number;
+  custoTotalImpacto: number;
+  motivo: string;
+  dataPerda: string;
+  responsavelId: string;
+  responsavelNome: string;
+  criadoEm: string;
+}
+
+export interface CommercialInventoryItem {
+  productId: string;
+  sku: string;
+  nome: string;
+  modulo: 'adega' | 'tabacaria';
+  unidade: string;
+  saldoSistema: number;
+  saldoContado: number | null;
+  divergencia: number;
+  custoUnitario: number;
+  impactoFinanceiro: number;
+  justificativa?: string;
+}
+
+export interface CommercialInventory {
+  id: string;
+  companyId: string;
+  codigo: string;
+  modulo: 'adega' | 'tabacaria' | 'ambos';
+  status: 'em_contagem' | 'conferido' | 'aprovado_ajustado' | 'cancelado';
+  itens: CommercialInventoryItem[];
+  totalItens: number;
+  totalDivergencias: number;
+  impactoFinanceiroTotal: number;
+  responsavelId: string;
+  responsavelNome: string;
+  aprovadoPorId?: string;
+  aprovadoPorNome?: string;
+  dataInicio: string;
+  dataConclusao?: string;
+  observacoes?: string;
+}
+
+export interface CommercialPeriodClosing {
+  id: string;
+  companyId: string;
+  codigo: string;
+  modulo: 'adega' | 'tabacaria' | 'ambos';
+  dataInicio: string;
+  dataFim: string;
+  entradasQtd: number;
+  saidasQtd: number;
+  vendasQtd: number;
+  vendasValor: number;
+  custoProdutosVendidos: number;
+  lucroBrutoEstimado: number;
+  margemBrutaPercentual: number;
+  comprasQtd: number;
+  comprasValor: number;
+  perdasQtd: number;
+  perdasValor: number;
+  despesasOperacionaisRegistradas: number | null;
+  lucroLiquidoObservado: number | null;
+  notaLucroLiquido: string;
+  observacoes?: string;
+  fechadoPorId: string;
+  fechadoPorNome: string;
+  criadoEm: string;
+}
+
+export type CommercialOrderStatus = 'recebido' | 'em_separacao' | 'saiu_entrega' | 'entregue' | 'cancelado';
+
+export interface CommercialOrderItem {
+  productId: string;
+  sku: string;
+  nome: string;
+  quantidade: number;
+  precoUnitario: number;
+  precoCusto: number;
+  total: number;
+  itemRestrito: boolean;
+}
+
+export interface CommercialOrder {
+  id: string;
+  companyId: string;
+  codigoPedido: string;
+  modulo: 'adega' | 'tabacaria' | 'misto';
+  customerId?: string;
+  clienteNome: string;
+  clienteTelefone?: string;
+  enderecoEntrega?: string;
+  bairro?: string;
+  cidade?: string;
+  tipoAtendimento: 'entrega' | 'retirada_balcao';
+  itens: CommercialOrderItem[];
+  valorItens: number;
+  taxaEntrega: number;
+  desconto: number;
+  valorTotal: number;
+  custoTotalEstimado: number;
+  formaPagamento: 'dinheiro' | 'pix' | 'cartao_credito' | 'cartao_debito' | 'pagamento_entrega';
+  contemItemRestrito: boolean;
+  verificacaoMaioridadeSolicitada: boolean;
+  verificacaoMaioridadeEntrega?: boolean;
+  status: CommercialOrderStatus;
+  entregadorId?: string;
+  entregadorNome?: string;
+  entregadorTelefone?: string;
+  ocorrencias: {
+    id: string;
+    dataHora: string;
+    descricao: string;
+    autorNome: string;
+  }[];
+  historicoStatus: {
+    status: CommercialOrderStatus;
+    dataHora: string;
+    autorId: string;
+    autorNome: string;
+    observacao?: string;
+  }[];
+  iniciadoEm: string;
+  entregueEm?: string;
+  duracaoOperacaoMinutos?: number;
+  canceladoEm?: string;
+  motivoCancelamento?: string;
+  saleId?: string;
+  observacoes?: string;
+  criadoPorId: string;
+  criadoPorNome: string;
+  criadoEm: string;
+  atualizadoEm: string;
+}
+
+export interface CommercialCustomer {
+  id: string;
+  companyId: string;
+  nome: string;
+  telefone?: string;
+  email?: string;
+  documento?: string;
+  endereco?: string;
+  bairro?: string;
+  cidade?: string;
+  observacoes?: string;
+  maioridadeVerificada: boolean;
+  consentimentoLgpd: boolean;
+  consentimentoLgpdEm?: string;
+  anonimizado: boolean;
+  anonimizadoEm?: string;
+  ativo: boolean;
+  criadoEm: string;
+  atualizadoEm: string;
+}
+
+export interface CommercialImportBatch {
+  id: string;
+  companyId: string;
+  arquivoNome: string;
+  formato: 'csv' | 'xlsx';
+  tipoAlvo: 'produtos' | 'fornecedores';
+  modulo: 'adega' | 'tabacaria';
+  modoEspelho: boolean;
+  totalLinhas: number;
+  importadosQtd: number;
+  ignoradosDuplicadosQtd: number;
+  errosQtd: number;
+  mapeamentoColunas: Record<string, string>;
+  errosDetalhes: { linha: number; erro: string }[];
+  usuarioId: string;
+  usuarioNome: string;
+  criadoEm: string;
+}
+
+export interface CommercialPilotConfig {
+  id: string; // one per company
+  companyId: string;
+  estabelecimentoNome: string;
+  estabelecimentoCnpj?: string;
+  estabelecimentoEndereco?: string;
+  whatsappPedidos?: string;
+  catalogoPublicoAtivo: boolean;
+  catalogoTitulo?: string;
+  checklistPassos: Record<
+    string,
+    {
+      concluido: boolean;
+      concluidoEm?: string;
+      concluidoPorNome?: string;
+    }
+  >;
+  modoEspelho: {
+    ativo: boolean;
+    iniciadoEm?: string;
+    expiraEm?: string;
+    pausadoEm?: string;
+    sistemaAnteriorNome?: string;
+    observacoes?: string;
+  };
+  migracao: {
+    status: 'nao_iniciada' | 'em_preparacao' | 'validada' | 'em_execucao' | 'pausada' | 'concluida';
+    etapaAtual: string;
+    etapasConcluidas: string[];
+    conflitosDetectados: number;
+    ultimoCheckEm?: string;
+    iniciadoEm?: string;
+    concluidoEm?: string;
+    pausadoEm?: string;
+    historicoLogs: {
+      id: string;
+      dataHora: string;
+      etapa: string;
+      status: string;
+      detalhes: string;
+      autorNome: string;
+    }[];
+  };
+  atualizadoEm: string;
 }
 
 export type TerminalProvider = 'mercadopago_point' | 'stone_connect' | 'pagar_me' | 'smartpos_tef' | 'pos_manual';
@@ -1206,6 +1537,16 @@ export interface DatabaseSchema {
   pixCharges: PixCharge[];
   commercialTerminals: CommercialTerminal[];
   commercialTerminalTransactions: CommercialTerminalTransaction[];
+  // Adega & Tabacaria — 4 Fases de Evolução
+  commercialAlerts: CommercialAlert[];
+  commercialReplenishments: CommercialReplenishment[];
+  commercialLosses: CommercialLoss[];
+  commercialInventories: CommercialInventory[];
+  commercialPeriodClosings: CommercialPeriodClosing[];
+  commercialOrders: CommercialOrder[];
+  commercialCustomers: CommercialCustomer[];
+  commercialImportBatches: CommercialImportBatch[];
+  commercialPilotConfigs: CommercialPilotConfig[];
   // MoviLog Inteligente — Central de Prevenção
   preventionDismissedAlerts: PreventionResolvedAlert[];
   // MoviLog Enterprise Logistics Ecosystem
@@ -1367,8 +1708,75 @@ const defaultSystemConfig: SystemConfig = {
   onboardingResetBy: null
 };
 
+function withJsonFileLockSync<T>(targetFile: string, fn: () => T): T {
+  const lockFile = `${targetFile}.lock`;
+  const start = Date.now();
+  const timeoutMs = 5000;
+  const staleMs = 15000;
+  let lockFd: number | null = null;
+
+  while (lockFd === null) {
+    try {
+      lockFd = fs.openSync(lockFile, 'wx');
+      fs.writeFileSync(lockFd, `${process.pid}:${Date.now()}`, 'utf-8');
+    } catch (err: any) {
+      if (err?.code !== 'EEXIST') throw err;
+      try {
+        const st = fs.statSync(lockFile);
+        if (Date.now() - st.mtimeMs > staleMs) {
+          fs.unlinkSync(lockFile);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() - start > timeoutMs) {
+        throw new Error(`Timeout aguardando lock de persistência em ${path.basename(targetFile)}`);
+      }
+      try {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      } catch {
+        const waitUntil = Date.now() + 10;
+        while (Date.now() < waitUntil) {
+          // brief spin
+        }
+      }
+    }
+  }
+
+  try {
+    return fn();
+  } finally {
+    try {
+      if (lockFd !== null) fs.closeSync(lockFd);
+    } catch {
+      // ignore
+    }
+    try {
+      fs.unlinkSync(lockFile);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function atomicWriteJsonFileSync(targetFile: string, payload: unknown): void {
+  const jsonStr = JSON.stringify(payload, null, 2);
+  const tempFile = `${targetFile}.tmp.${Date.now()}.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
+  const fd = fs.openSync(tempFile, 'w', 0o600);
+  try {
+    fs.writeFileSync(fd, jsonStr, 'utf-8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tempFile, targetFile);
+}
+
 class Database {
   private data: DatabaseSchema;
+  private lastDiskStamp: string | null = null;
+  private isSavingJson = false;
 
   constructor() {
     if (isPostgresActive()) {
@@ -1376,6 +1784,111 @@ class Database {
       this.data = this.createEmptySchema();
     } else {
       this.data = this.load();
+    }
+  }
+
+  private getFileStamp(filePath: string): string | null {
+    try {
+      const st = fs.statSync(filePath);
+      return `${st.ino}:${st.mtimeMs}:${st.size}`;
+    } catch {
+      return null;
+    }
+  }
+
+  private normalizeParsedSchema(parsed: any): DatabaseSchema {
+    return {
+      users: parsed.users || [],
+      companies: parsed.companies || [],
+      plans: parsed.plans && parsed.plans.length > 0 ? parsed.plans : defaultPlans,
+      systemConfig: parsed.systemConfig || defaultSystemConfig,
+      payments: parsed.payments || [],
+      auditLogs: parsed.auditLogs || [],
+      logisticsReceipts: parsed.logisticsReceipts || [],
+      inventory: parsed.inventory || [],
+      stockMovements: parsed.stockMovements || [],
+      shipments: parsed.shipments || [],
+      deliveries: parsed.deliveries || [],
+      vehicles: parsed.vehicles || [],
+      routes: parsed.routes || [],
+      condoUnits: parsed.condoUnits || [],
+      condoPackages: parsed.condoPackages || [],
+      condoVisitors: parsed.condoVisitors || [],
+      fiscalConfigs: parsed.fiscalConfigs || [],
+      fiscalDocuments: parsed.fiscalDocuments || [],
+      financialRecords: parsed.financialRecords || [],
+      notifications: parsed.notifications || [],
+      commercialProducts: (parsed.commercialProducts || []).map((p: any) => {
+        if (!p.classificacaoLegal) {
+          const cat = (p.categoria || '').toLowerCase();
+          const nome = (p.nome || '').toLowerCase();
+          if (
+            cat.includes('cerveja') || cat.includes('vinho') || cat.includes('destilad') ||
+            nome.includes('cerveja') || nome.includes('vinho') || nome.includes('vodka') ||
+            nome.includes('whisky') || nome.includes('gin') || nome.includes('cachaça')
+          ) {
+            p.classificacaoLegal = 'bebida_alcoolica';
+            p.idadeMinima = 18;
+          } else if (
+            cat.includes('tabaco') || cat.includes('charuto') || cat.includes('cigarro') ||
+            nome.includes('tabaco') || nome.includes('charuto') || nome.includes('cigarro') || nome.includes('palheiro')
+          ) {
+            p.classificacaoLegal = 'tabaco_derivados';
+            p.idadeMinima = 18;
+          } else {
+            p.classificacaoLegal = 'sem_restricao';
+            p.idadeMinima = 0;
+          }
+        }
+        return p;
+      }),
+      commercialStockMovements: parsed.commercialStockMovements || [],
+      commercialSales: parsed.commercialSales || [],
+      commercialCashSessions: parsed.commercialCashSessions || [],
+      commercialSuppliers: parsed.commercialSuppliers || [],
+      commercialPurchases: parsed.commercialPurchases || [],
+      pixCharges: parsed.pixCharges || [],
+      commercialTerminals: parsed.commercialTerminals || [],
+      commercialTerminalTransactions: parsed.commercialTerminalTransactions || [],
+      commercialAlerts: parsed.commercialAlerts || [],
+      commercialReplenishments: parsed.commercialReplenishments || [],
+      commercialLosses: parsed.commercialLosses || [],
+      commercialInventories: parsed.commercialInventories || [],
+      commercialPeriodClosings: parsed.commercialPeriodClosings || [],
+      commercialOrders: parsed.commercialOrders || [],
+      commercialCustomers: parsed.commercialCustomers || [],
+      commercialImportBatches: parsed.commercialImportBatches || [],
+      commercialPilotConfigs: parsed.commercialPilotConfigs || [],
+      preventionDismissedAlerts: parsed.preventionDismissedAlerts || [],
+      warehouses: parsed.warehouses || [],
+      warehouseTransfers: parsed.warehouseTransfers || [],
+      warehouseAudits: parsed.warehouseAudits || [],
+      fulfillmentOrders: parsed.fulfillmentOrders || [],
+      pickingTasks: parsed.pickingTasks || [],
+      packingTasks: parsed.packingTasks || [],
+      reverseLogistics: parsed.reverseLogistics || [],
+      carrierPartners: parsed.carrierPartners || [],
+      b2bClients: parsed.b2bClients || [],
+      b2bCollections: parsed.b2bCollections || [],
+      shippingManifests: parsed.shippingManifests || [],
+      aiInsights: parsed.aiInsights || []
+    };
+  }
+
+  private syncFromDiskIfChanged(): void {
+    if (isPostgresActive() || this.isSavingJson) return;
+    const currentStamp = this.getFileStamp(DB_FILE);
+    if (!currentStamp || currentStamp === this.lastDiskStamp) return;
+
+    try {
+      const raw = fs.readFileSync(DB_FILE, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.users) && Array.isArray(parsed.companies)) {
+        this.data = this.normalizeParsedSchema(parsed);
+        this.lastDiskStamp = currentStamp;
+      }
+    } catch {
+      // Preserve in-memory snapshot if another process is mid-write/parse fails transiently
     }
   }
 
@@ -1410,6 +1923,15 @@ class Database {
       pixCharges: [],
       commercialTerminals: [],
       commercialTerminalTransactions: [],
+      commercialAlerts: [],
+      commercialReplenishments: [],
+      commercialLosses: [],
+      commercialInventories: [],
+      commercialPeriodClosings: [],
+      commercialOrders: [],
+      commercialCustomers: [],
+      commercialImportBatches: [],
+      commercialPilotConfigs: [],
       preventionDismissedAlerts: [],
       warehouses: [],
       warehouseTransfers: [],
@@ -1436,6 +1958,7 @@ class Database {
       }
       return ctx.data as DatabaseSchema;
     }
+    this.syncFromDiskIfChanged();
     return this.data;
   }
 
@@ -1444,74 +1967,8 @@ class Database {
       try {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
-        // Ensure all collections exist
-        return {
-          users: parsed.users || [],
-          companies: parsed.companies || [],
-          plans: parsed.plans && parsed.plans.length > 0 ? parsed.plans : defaultPlans,
-          systemConfig: parsed.systemConfig || defaultSystemConfig,
-          payments: parsed.payments || [],
-          auditLogs: parsed.auditLogs || [],
-          logisticsReceipts: parsed.logisticsReceipts || [],
-          inventory: parsed.inventory || [],
-          stockMovements: parsed.stockMovements || [],
-          shipments: parsed.shipments || [],
-          deliveries: parsed.deliveries || [],
-          vehicles: parsed.vehicles || [],
-          routes: parsed.routes || [],
-          condoUnits: parsed.condoUnits || [],
-          condoPackages: parsed.condoPackages || [],
-          condoVisitors: parsed.condoVisitors || [],
-          fiscalConfigs: parsed.fiscalConfigs || [],
-          fiscalDocuments: parsed.fiscalDocuments || [],
-          financialRecords: parsed.financialRecords || [],
-          notifications: parsed.notifications || [],
-          commercialProducts: (parsed.commercialProducts || []).map((p: any) => {
-            if (!p.classificacaoLegal) {
-              const cat = (p.categoria || '').toLowerCase();
-              const nome = (p.nome || '').toLowerCase();
-              if (
-                cat.includes('cerveja') || cat.includes('vinho') || cat.includes('destilad') ||
-                nome.includes('cerveja') || nome.includes('vinho') || nome.includes('vodka') ||
-                nome.includes('whisky') || nome.includes('gin') || nome.includes('cachaça')
-              ) {
-                p.classificacaoLegal = 'bebida_alcoolica';
-                p.idadeMinima = 18;
-              } else if (
-                cat.includes('tabaco') || cat.includes('charuto') || cat.includes('cigarro') ||
-                nome.includes('tabaco') || nome.includes('charuto') || nome.includes('cigarro') || nome.includes('palheiro')
-              ) {
-                p.classificacaoLegal = 'tabaco_derivados';
-                p.idadeMinima = 18;
-              } else {
-                p.classificacaoLegal = 'sem_restricao';
-                p.idadeMinima = 0;
-              }
-            }
-            return p;
-          }),
-          commercialStockMovements: parsed.commercialStockMovements || [],
-          commercialSales: parsed.commercialSales || [],
-          commercialCashSessions: parsed.commercialCashSessions || [],
-          commercialSuppliers: parsed.commercialSuppliers || [],
-          commercialPurchases: parsed.commercialPurchases || [],
-          pixCharges: parsed.pixCharges || [],
-          commercialTerminals: parsed.commercialTerminals || [],
-          commercialTerminalTransactions: parsed.commercialTerminalTransactions || [],
-          preventionDismissedAlerts: parsed.preventionDismissedAlerts || [],
-          warehouses: parsed.warehouses || [],
-          warehouseTransfers: parsed.warehouseTransfers || [],
-          warehouseAudits: parsed.warehouseAudits || [],
-          fulfillmentOrders: parsed.fulfillmentOrders || [],
-          pickingTasks: parsed.pickingTasks || [],
-          packingTasks: parsed.packingTasks || [],
-          reverseLogistics: parsed.reverseLogistics || [],
-          carrierPartners: parsed.carrierPartners || [],
-          b2bClients: parsed.b2bClients || [],
-          b2bCollections: parsed.b2bCollections || [],
-          shippingManifests: parsed.shippingManifests || [],
-          aiInsights: parsed.aiInsights || []
-        };
+        this.lastDiskStamp = this.getFileStamp(DB_FILE);
+        return this.normalizeParsedSchema(parsed);
       } catch (err) {
         console.error('Error loading db.json, attempting backup_db.json fallback:', err);
         const backupFile = path.resolve(DATA_DIR, 'backup_db.json');
@@ -1550,6 +2007,15 @@ class Database {
               pixCharges: parsedBackup.pixCharges || [],
               commercialTerminals: parsedBackup.commercialTerminals || [],
               commercialTerminalTransactions: parsedBackup.commercialTerminalTransactions || [],
+              commercialAlerts: parsedBackup.commercialAlerts || [],
+              commercialReplenishments: parsedBackup.commercialReplenishments || [],
+              commercialLosses: parsedBackup.commercialLosses || [],
+              commercialInventories: parsedBackup.commercialInventories || [],
+              commercialPeriodClosings: parsedBackup.commercialPeriodClosings || [],
+              commercialOrders: parsedBackup.commercialOrders || [],
+              commercialCustomers: parsedBackup.commercialCustomers || [],
+              commercialImportBatches: parsedBackup.commercialImportBatches || [],
+              commercialPilotConfigs: parsedBackup.commercialPilotConfigs || [],
               preventionDismissedAlerts: parsedBackup.preventionDismissedAlerts || [],
               warehouses: parsedBackup.warehouses || [],
               warehouseTransfers: parsedBackup.warehouseTransfers || [],
@@ -1577,16 +2043,25 @@ class Database {
   }
 
   private saveData(data: DatabaseSchema): void {
-    const tempFile = `${DB_FILE}.tmp.${Date.now()}.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
-    fs.writeFileSync(tempFile, JSON.stringify(data, null, 2), 'utf-8');
-    fs.renameSync(tempFile, DB_FILE);
-
-    // Maintain defensive persistent backup copy
+    if (Array.isArray(data.users) && data.users.length > 0) {
+      assertMasterOwnerSingleton(data.users, data.systemConfig);
+    }
+    this.isSavingJson = true;
     try {
-      const backupFile = path.resolve(DATA_DIR, 'backup_db.json');
-      fs.copyFileSync(DB_FILE, backupFile);
-    } catch {
-      // Ignore backup copy non-fatal errors
+      withJsonFileLockSync(DB_FILE, () => {
+        atomicWriteJsonFileSync(DB_FILE, data);
+        this.lastDiskStamp = this.getFileStamp(DB_FILE);
+
+        // Maintain defensive atomic persistent backup copy
+        try {
+          const backupFile = path.resolve(DATA_DIR, 'backup_db.json');
+          atomicWriteJsonFileSync(backupFile, data);
+        } catch {
+          // Ignore backup copy non-fatal errors
+        }
+      });
+    } finally {
+      this.isSavingJson = false;
     }
   }
 
@@ -1600,6 +2075,7 @@ class Database {
       return promise;
     }
     this.saveData(this.data);
+    return Promise.resolve();
   }
 
   public get users() { return this.activeData.users; }
@@ -1631,6 +2107,15 @@ class Database {
   public get pixCharges() { return this.activeData.pixCharges; }
   public get commercialTerminals() { return this.activeData.commercialTerminals; }
   public get commercialTerminalTransactions() { return this.activeData.commercialTerminalTransactions; }
+  public get commercialAlerts() { return this.activeData.commercialAlerts || (this.activeData.commercialAlerts = []); }
+  public get commercialReplenishments() { return this.activeData.commercialReplenishments || (this.activeData.commercialReplenishments = []); }
+  public get commercialLosses() { return this.activeData.commercialLosses || (this.activeData.commercialLosses = []); }
+  public get commercialInventories() { return this.activeData.commercialInventories || (this.activeData.commercialInventories = []); }
+  public get commercialPeriodClosings() { return this.activeData.commercialPeriodClosings || (this.activeData.commercialPeriodClosings = []); }
+  public get commercialOrders() { return this.activeData.commercialOrders || (this.activeData.commercialOrders = []); }
+  public get commercialCustomers() { return this.activeData.commercialCustomers || (this.activeData.commercialCustomers = []); }
+  public get commercialImportBatches() { return this.activeData.commercialImportBatches || (this.activeData.commercialImportBatches = []); }
+  public get commercialPilotConfigs() { return this.activeData.commercialPilotConfigs || (this.activeData.commercialPilotConfigs = []); }
   public get preventionDismissedAlerts() { return this.activeData.preventionDismissedAlerts || (this.activeData.preventionDismissedAlerts = []); }
   public get warehouses() { return this.activeData.warehouses || (this.activeData.warehouses = []); }
   public get warehouseTransfers() { return this.activeData.warehouseTransfers || (this.activeData.warehouseTransfers = []); }
@@ -1665,10 +2150,11 @@ class Database {
       timestamp: new Date().toISOString(),
       ...log
     };
-    this.data.auditLogs.unshift(entry);
+    const current = this.activeData;
+    current.auditLogs.unshift(entry);
     // Keep max 2000 logs
-    if (this.data.auditLogs.length > 2000) {
-      this.data.auditLogs = this.data.auditLogs.slice(0, 2000);
+    if (current.auditLogs.length > 2000) {
+      current.auditLogs = current.auditLogs.slice(0, 2000);
     }
     this.save();
   }
@@ -1704,6 +2190,16 @@ export function verifyPassword(password: string, hash: string, salt: string): bo
 
 // Persistent session token mapping to user ID
 const SESSIONS_FILE = path.resolve(DATA_DIR, 'sessions.json');
+let lastSessionsDiskStamp: string | null = null;
+
+function getSessionsFileStamp(): string | null {
+  try {
+    const st = fs.statSync(SESSIONS_FILE);
+    return `${st.ino}:${st.mtimeMs}:${st.size}`;
+  } catch {
+    return null;
+  }
+}
 
 function loadSessions(): Map<string, { userId: string; expiresAt: number }> {
   const map = new Map<string, { userId: string; expiresAt: number }>();
@@ -1714,8 +2210,9 @@ function loadSessions(): Map<string, { userId: string; expiresAt: number }> {
       for (const [k, v] of Object.entries(obj)) {
         map.set(k, v as { userId: string; expiresAt: number });
       }
-    } catch (e) {
-      // ignore
+      lastSessionsDiskStamp = getSessionsFileStamp();
+    } catch {
+      // ignore malformed read
     }
   }
   return map;
@@ -1727,38 +2224,51 @@ function saveSessions(map: Map<string, { userId: string; expiresAt: number }>): 
     for (const [k, v] of map.entries()) {
       obj[k] = v;
     }
-    const tempFile = `${SESSIONS_FILE}.tmp.${Date.now()}.${process.pid}`;
-    fs.writeFileSync(tempFile, JSON.stringify(obj, null, 2), 'utf-8');
-    fs.renameSync(tempFile, SESSIONS_FILE);
-  } catch (e) {
+    atomicWriteJsonFileSync(SESSIONS_FILE, obj);
+    lastSessionsDiskStamp = getSessionsFileStamp();
+  } catch {
     // ignore
   }
 }
 
 const sessions = isPostgresActive() ? new Map<string, { userId: string; expiresAt: number }>() : loadSessions();
 
+function syncSessionsFromDiskIfChanged(): void {
+  if (isPostgresActive()) return;
+  const currentStamp = getSessionsFileStamp();
+  if (!currentStamp || currentStamp === lastSessionsDiskStamp) return;
+  const disk = loadSessions();
+  if (disk.size > 0 || fs.existsSync(SESSIONS_FILE)) {
+    sessions.clear();
+    for (const [k, v] of disk.entries()) {
+      sessions.set(k, v);
+    }
+  }
+}
+
 export function createSession(userId: string): string {
-  const token = crypto.randomBytes(32).toString('hex');
-  const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
-  sessions.set(token, { userId, expiresAt });
-  saveSessions(sessions);
-  return token;
+  return withJsonFileLockSync(SESSIONS_FILE, () => {
+    syncSessionsFromDiskIfChanged();
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
+    sessions.set(token, { userId, expiresAt });
+    saveSessions(sessions);
+    return token;
+  });
 }
 
 export function getSessionUser(token: string): User | null {
   if (!token) return null;
-  let session = sessions.get(token);
-  if (!session) {
-    const diskSessions = loadSessions();
-    session = diskSessions.get(token);
-    if (session) {
-      sessions.set(token, session);
-    }
-  }
+  syncSessionsFromDiskIfChanged();
+  const session = sessions.get(token);
   if (!session) return null;
   if (Date.now() > session.expiresAt) {
-    sessions.delete(token);
-    saveSessions(sessions);
+    withJsonFileLockSync(SESSIONS_FILE, () => {
+      syncSessionsFromDiskIfChanged();
+      if (sessions.delete(token)) {
+        saveSessions(sessions);
+      }
+    });
     return null;
   }
   const user = db.users.find(u => u.id === session.userId && u.active);
@@ -1766,8 +2276,12 @@ export function getSessionUser(token: string): User | null {
 }
 
 export function destroySession(token: string): void {
-  sessions.delete(token);
-  saveSessions(sessions);
+  withJsonFileLockSync(SESSIONS_FILE, () => {
+    syncSessionsFromDiskIfChanged();
+    if (sessions.delete(token)) {
+      saveSessions(sessions);
+    }
+  });
 }
 
 export async function createSessionAsync(userId: string): Promise<string> {
@@ -1797,20 +2311,17 @@ export async function revokeAllUserSessionsAsync(userId: string): Promise<void> 
     await pgRepo.revokeAllUserSessions(userId);
     return;
   }
-  const diskSessions = loadSessions();
-  for (const [k, v] of diskSessions.entries()) {
-    if (!sessions.has(k)) {
-      sessions.set(k, v);
+  withJsonFileLockSync(SESSIONS_FILE, () => {
+    syncSessionsFromDiskIfChanged();
+    let changed = false;
+    for (const [k, v] of sessions.entries()) {
+      if (v.userId === userId) {
+        sessions.delete(k);
+        changed = true;
+      }
     }
-  }
-  let changed = false;
-  for (const [k, v] of sessions.entries()) {
-    if (v.userId === userId) {
-      sessions.delete(k);
-      changed = true;
-    }
-  }
-  if (changed) saveSessions(sessions);
+    if (changed) saveSessions(sessions);
+  });
 }
 
 // Brazilian SEFAZ 44-digit Access Key Generator with Modulo 11 DV

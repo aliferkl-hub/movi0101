@@ -10,7 +10,12 @@ import {
   createSessionAsync,
   getSessionUserAsync,
   destroySessionAsync,
-  revokeAllUserSessionsAsync
+  revokeAllUserSessionsAsync,
+  ORIGINAL_MASTER_OWNER_ID,
+  ORIGINAL_MASTER_OWNER_EMAIL,
+  getOfficialMasterEmailNormalized,
+  isOfficialMasterOwner,
+  assertMasterOwnerSingleton,
 } from './db.ts';
 import {
   getActivePgContext,
@@ -71,6 +76,7 @@ import type {
 import { geocodeAddress, calculateDistanceKm } from './geocoding.ts';
 import { generateBacenPixPayload, createPixChargeQrCode, getPixProviderStatus } from './pix.ts';
 import { GatewayFactory } from './payment_gateways/GatewayFactory.ts';
+import { createCommerceEvolutionRouter } from './commerce/routes.ts';
 
 export const apiRouter = express.Router();
 
@@ -142,7 +148,7 @@ const authenticate = async (req: AuthRequest, res: Response, next: NextFunction)
       if (company) {
         req.company = company;
       }
-    } else if (user.role === 'master_owner') {
+    } else if (isOfficialMasterOwner(user, db.systemConfig)) {
       req.company = ensureDefaultCompany(req);
     }
     next();
@@ -189,19 +195,23 @@ export const ensureDefaultCompany = (req?: AuthRequest): Company => {
 export const getEffectiveCompanyId = (req: AuthRequest): string => {
   if (req.company?.id) return req.company.id;
   if (req.user?.companyId) return req.user.companyId;
-  if (req.body?.companyId && typeof req.body.companyId === 'string' && req.body.companyId.trim()) {
-    return req.body.companyId.trim();
-  }
-  if (req.query?.companyId && typeof req.query.companyId === 'string' && req.query.companyId.trim()) {
-    return req.query.companyId.trim();
-  }
-  const headerCompany = req.headers['x-company-id'];
-  if (headerCompany && typeof headerCompany === 'string' && headerCompany.trim()) {
-    return headerCompany.trim();
+  if (isOfficialMasterOwner(req.user, db.systemConfig)) {
+    if (req.body?.companyId && typeof req.body.companyId === 'string' && req.body.companyId.trim()) {
+      return req.body.companyId.trim();
+    }
+    if (req.query?.companyId && typeof req.query.companyId === 'string' && req.query.companyId.trim()) {
+      return req.query.companyId.trim();
+    }
+    const headerCompany = req.headers['x-company-id'];
+    if (headerCompany && typeof headerCompany === 'string' && headerCompany.trim()) {
+      return headerCompany.trim();
+    }
+
+    const comp = ensureDefaultCompany(req);
+    return comp.id;
   }
 
-  const comp = ensureDefaultCompany(req);
-  return comp.id;
+  return '';
 };
 
 // Master Owner Authorization Middleware
@@ -210,22 +220,22 @@ const requireMaster = (req: AuthRequest, res: Response, next: NextFunction): voi
     res.status(401).json({ error: 'Não autenticado' });
     return;
   }
-  if (req.user.role !== 'master_owner') {
+  if (!isOfficialMasterOwner(req.user, db.systemConfig)) {
     res.status(403).json({ error: 'Acesso restrito ao Administrador Master Owner' });
     return;
   }
   next();
 };
 
-// Subscription Check Middleware (Master Owner is completely exempt)
+// Subscription Check Middleware (Official Master Owner is completely exempt)
 const checkSubscription = async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
     if (!req.user) {
       res.status(401).json({ error: 'Não autenticado' });
       return;
     }
-    // Master Owner always has full permanent access
-    if (req.user.role === 'master_owner') {
+    // Official Master Owner always has full permanent access
+    if (isOfficialMasterOwner(req.user, db.systemConfig)) {
       next();
       return;
     }
@@ -291,13 +301,9 @@ const checkSubscription = async (req: AuthRequest, res: Response, next: NextFunc
 // ==========================================
 
 function getOnboardingStatusSnapshot() {
-  const masterEmail = db.systemConfig.masterEmail;
-  const masterUser = db.users.find(
-    (u) => u.role === 'master_owner' && u.email.toLowerCase() === masterEmail.toLowerCase()
-  );
-  const hasMasterCredentials = db.users.some(
-    (u) => u.role === 'master_owner' && Boolean(u.passwordHash && u.salt)
-  );
+  const masterEmail = ORIGINAL_MASTER_OWNER_EMAIL;
+  const masterUser = db.users.find((u) => isOfficialMasterOwner(u, db.systemConfig));
+  const hasMasterCredentials = Boolean(masterUser && masterUser.passwordHash && masterUser.salt);
   const masterInitialized = Boolean(masterUser && db.systemConfig.masterInitialized);
   const hasCompanies = db.companies.length > 0;
   const onboardingCompleted =
@@ -368,7 +374,7 @@ apiRouter.post('/onboarding/complete', async (req: Request, res: Response, next:
         return;
       }
     }
-    const isMasterCaller = callerUser?.role === 'master_owner';
+    const isMasterCaller = isOfficialMasterOwner(callerUser, db.systemConfig);
 
     const snap = getOnboardingStatusSnapshot();
     if (snap.onboardingCompleted) {
@@ -427,10 +433,18 @@ apiRouter.post('/onboarding/complete', async (req: Request, res: Response, next:
       return;
     }
 
-    // Never allow touching, linking, or impersonating any Master Owner account
-    const isMasterTargetEmail = db.users.some(
-      (u) => u.role === 'master_owner' && u.email.trim().toLowerCase() === adminEmail
-    );
+    // Never allow touching, linking, or impersonating the Master Owner account
+    const officialEmailLower = getOfficialMasterEmailNormalized(db.systemConfig);
+    const isMasterTargetEmail =
+      adminEmail === officialEmailLower ||
+      adminEmail === ORIGINAL_MASTER_OWNER_EMAIL.toLowerCase() ||
+      companyEmail === officialEmailLower ||
+      companyEmail === ORIGINAL_MASTER_OWNER_EMAIL.toLowerCase() ||
+      db.users.some(
+        (u) =>
+          (u.role === 'master_owner' || u.id === ORIGINAL_MASTER_OWNER_ID) &&
+          u.email.trim().toLowerCase() === adminEmail
+      );
     if (isMasterTargetEmail) {
       res.status(403).json({
         error: 'A conta Master Owner é exclusiva da plataforma e não pode ser modificada ou vinculada no onboarding empresarial.',
@@ -510,7 +524,11 @@ apiRouter.post('/onboarding/complete', async (req: Request, res: Response, next:
         res.status(404).json({ error: 'Usuário administrador não localizado para vinculação.' });
         return;
       }
-      if (existingUser.role === 'master_owner') {
+      if (
+        existingUser.role === 'master_owner' ||
+        existingUser.id === ORIGINAL_MASTER_OWNER_ID ||
+        existingUser.email.trim().toLowerCase() === ORIGINAL_MASTER_OWNER_EMAIL.toLowerCase()
+      ) {
         res.status(403).json({ error: 'Não é permitido vincular a conta Master Owner.' });
         return;
       }
@@ -640,96 +658,100 @@ apiRouter.post('/onboarding/complete', async (req: Request, res: Response, next:
   }
 });
 
-// Initialize Master Owner account securely
-// Initialize or Reset Master Owner account securely
+// Initialize Master Owner account securely (singleton enforced)
 apiRouter.post('/auth/init-master', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, password, name, phone } = req.body;
-    const authorizedEmails = [
-      db.systemConfig.masterEmail.toLowerCase(),
-      'alifermadeiro@hotmail.com',
-      'alifergael76@gmail.com'
-    ];
+    const officialEmailNormalized = getOfficialMasterEmailNormalized(db.systemConfig);
+    const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
 
+    const otherMasterExists = db.users.some(
+      (u) => u.role === 'master_owner' && u.id !== ORIGINAL_MASTER_OWNER_ID
+    );
     const alreadyInitialized =
-      db.systemConfig.masterInitialized &&
+      db.systemConfig.masterInitialized ||
       db.users.some(
         (u) =>
-          u.role === 'master_owner' &&
-          authorizedEmails.includes(u.email.toLowerCase()) &&
+          (u.role === 'master_owner' || u.id === ORIGINAL_MASTER_OWNER_ID) &&
           Boolean(u.passwordHash && u.salt)
       );
-    if (alreadyInitialized) {
+
+    if (alreadyInitialized || otherMasterExists) {
       await db.logAudit({
         userId: 'anonymous',
-        userEmail: typeof email === 'string' ? email.trim().toLowerCase() : '',
+        userEmail: cleanEmail,
         userName: 'Anônimo',
         acao: 'REINICIALIZACAO_MASTER_BLOQUEADA',
-        detalhes: 'Tentativa não autenticada de sobrescrever Master Owner já inicializado via /auth/init-master bloqueada.',
-        ip: req.ip
+        detalhes:
+          'Tentativa de sobrescrever ou criar segundo Master Owner via /auth/init-master bloqueada pela regra de singleton.',
+        ip: req.ip,
       });
       res.status(403).json({
-        error: 'Master Owner já foi inicializado. Utilize o login ou a recuperação administrativa com chave do servidor.'
+        error:
+          'Master Owner oficial já foi inicializado. Não é permitido criar ou sobrescrever privilégios Master Owner.',
       });
       return;
     }
 
-    if (!email || !authorizedEmails.includes(email.trim().toLowerCase())) {
-      res.status(400).json({ error: `O e-mail de ativação deve ser um dos e-mails autorizados do Master Owner (${db.systemConfig.masterEmail})` });
+    if (
+      !cleanEmail ||
+      cleanEmail !== officialEmailNormalized ||
+      cleanEmail !== ORIGINAL_MASTER_OWNER_EMAIL.toLowerCase()
+    ) {
+      await db.logAudit({
+        userId: 'anonymous',
+        userEmail: cleanEmail,
+        userName: 'Anônimo',
+        acao: 'CRIACAO_MASTER_OWNER_BLOQUEADA',
+        detalhes: 'Tentativa de inicializar Master Owner com e-mail não oficial bloqueada.',
+        ip: req.ip,
+      });
+      res.status(403).json({
+        error: `Somente o e-mail oficial do Master Owner (${ORIGINAL_MASTER_OWNER_EMAIL}) é autorizado.`,
+      });
       return;
     }
 
-    const cleanEmail = email.trim().toLowerCase();
-    const existingMaster = db.users.find(u => u.role === 'master_owner' && (u.email.toLowerCase() === cleanEmail || authorizedEmails.includes(u.email.toLowerCase())));
-
-    if (!password || password.length < 8) {
+    if (!password || typeof password !== 'string' || password.length < 8) {
       res.status(400).json({ error: 'A senha do Master Owner deve possuir pelo menos 8 caracteres' });
       return;
     }
 
+    const existingOfficial = db.users.find((u) => u.id === ORIGINAL_MASTER_OWNER_ID);
     const { hash, salt } = hashPassword(password);
 
-    // Update existing or create master user
-    const masterId = existingMaster ? existingMaster.id : crypto.randomUUID();
     const masterUser: User = {
-      id: masterId,
-      email: existingMaster ? existingMaster.email : db.systemConfig.masterEmail,
-      name: name || existingMaster?.name || 'Administrador Master Owner',
+      id: ORIGINAL_MASTER_OWNER_ID,
+      email: existingOfficial?.email || ORIGINAL_MASTER_OWNER_EMAIL,
+      name: name || existingOfficial?.name || 'Administrador Master Owner',
       passwordHash: hash,
       salt: salt,
       role: 'master_owner',
       companyId: null,
-      phone: phone || existingMaster?.phone || '',
+      phone: phone || existingOfficial?.phone || '',
       active: true,
-      createdAt: existingMaster?.createdAt || new Date().toISOString()
+      createdAt: existingOfficial?.createdAt || new Date().toISOString(),
     };
 
-    if (existingMaster) {
-      const index = db.users.findIndex(u => u.id === existingMaster.id);
+    if (existingOfficial) {
+      const index = db.users.findIndex((u) => u.id === ORIGINAL_MASTER_OWNER_ID);
       db.users[index] = masterUser;
     } else {
       db.users.push(masterUser);
     }
 
-    // Also synchronize any secondary authorized master account (e.g. alifergael76@gmail.com)
-    db.users.forEach(u => {
-      if (u.role === 'master_owner' && authorizedEmails.includes(u.email.toLowerCase())) {
-        u.passwordHash = hash;
-        u.salt = salt;
-        u.active = true;
-      }
-    });
-
+    db.systemConfig.masterEmail = ORIGINAL_MASTER_OWNER_EMAIL;
     db.systemConfig.masterInitialized = true;
+    assertMasterOwnerSingleton(db.users, db.systemConfig);
     await db.save();
 
     await db.logAudit({
       userId: masterUser.id,
       userEmail: masterUser.email,
       userName: masterUser.name,
-      acao: existingMaster ? 'REINICIALIZACAO_MASTER' : 'INICIALIZACAO_MASTER',
-      detalhes: 'Conta Master Owner inicializada e verificada com sucesso',
-      ip: req.ip
+      acao: existingOfficial ? 'REINICIALIZACAO_MASTER' : 'INICIALIZACAO_MASTER',
+      detalhes: 'Conta Master Owner oficial inicializada com sucesso (singleton verificado)',
+      ip: req.ip,
     });
 
     const token = await createSessionAsync(masterUser.id);
@@ -741,16 +763,13 @@ apiRouter.post('/auth/init-master', async (req: Request, res: Response, next: Ne
         email: masterUser.email,
         name: masterUser.name,
         role: masterUser.role,
-        companyId: null
-      }
+        companyId: null,
+      },
     });
   } catch (err) {
     next(err);
   }
 });
-
-const ORIGINAL_MASTER_OWNER_ID = '312f0489-d5ba-4a34-b493-4ffe7318cf2e';
-const ORIGINAL_MASTER_OWNER_EMAIL = 'Alifermadeiro@hotmail.com';
 const RECOVERY_RATE_WINDOW_MS = 15 * 60 * 1000;
 const RECOVERY_MAX_ATTEMPTS_PER_IP = 5;
 const RECOVERY_MAX_FAILED_GLOBAL = 12;
@@ -775,9 +794,8 @@ export function _resetMasterRecoveryRateLimitForTesting(): void {
 }
 
 function getRecoveryClientKey(req: Request): string {
-  const fwd = req.headers['x-forwarded-for'];
-  const fwdIp = typeof fwd === 'string' ? fwd.split(',')[0]?.trim() : '';
-  return req.ip || fwdIp || req.socket.remoteAddress || 'unknown';
+  // Rely solely on Express trust-proxy-verified req.ip (never parse client-supplied X-Forwarded-For directly)
+  return req.ip || req.socket.remoteAddress || 'unknown';
 }
 
 function checkRecoveryRateLimit(clientKey: string): { allowed: boolean; retryAfterSec: number } {
@@ -826,27 +844,55 @@ function clearRecoveryFailureForClient(clientKey: string): void {
   recoveryIpAttempts.delete(clientKey);
 }
 
+const VALID_HOST_REGEX = /^[a-z0-9.-]+(?::\d{1,5})?$/i;
+const AI_STUDIO_RUN_HOST_REGEX = /^ais-(dev|pre)-([a-z0-9-]+(?:\.[a-z0-9-]+)*\.run\.app)(?::\d{1,5})?$/i;
+
+function addTrustedRecoveryHost(allowedHosts: Set<string>, rawHost: string): void {
+  const host = rawHost.trim().toLowerCase();
+  if (!host || !VALID_HOST_REGEX.test(host)) return;
+  allowedHosts.add(host);
+
+  // Pair strictly the same application ID between AI Studio dev (ais-dev-*) and published (ais-pre-*) URLs
+  const match = host.match(AI_STUDIO_RUN_HOST_REGEX);
+  if (match) {
+    const suffix = match[2];
+    allowedHosts.add(`ais-dev-${suffix}`);
+    allowedHosts.add(`ais-pre-${suffix}`);
+  }
+}
+
 function isAllowedRecoveryOrigin(req: Request): boolean {
   const secFetchSite = req.get('sec-fetch-site');
   if (secFetchSite && secFetchSite.toLowerCase() === 'cross-site') {
     return false;
   }
 
+  // Build allowedHosts strictly from trusted server-side configuration and request Host (never X-Forwarded-Host)
   const allowedHosts = new Set<string>();
   const reqHost = req.get('host');
-  if (reqHost) allowedHosts.add(reqHost.toLowerCase());
-  const fwdHost = req.get('x-forwarded-host');
-  if (fwdHost) {
-    for (const h of fwdHost.split(',')) {
-      if (h.trim()) allowedHosts.add(h.trim().toLowerCase());
-    }
+  if (reqHost) {
+    addTrustedRecoveryHost(allowedHosts, reqHost);
   }
   if (process.env.APP_URL) {
     try {
       const appUrl = new URL(process.env.APP_URL);
-      allowedHosts.add(appUrl.host.toLowerCase());
+      if (appUrl.protocol === 'http:' || appUrl.protocol === 'https:') {
+        addTrustedRecoveryHost(allowedHosts, appUrl.host);
+      }
     } catch {
       // Ignore placeholder values such as MY_APP_URL
+    }
+  }
+  if (process.env.ALLOWED_RECOVERY_ORIGINS) {
+    for (const rawEntry of process.env.ALLOWED_RECOVERY_ORIGINS.split(',')) {
+      const trimmed = rawEntry.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = trimmed.includes('://') ? new URL(trimmed) : new URL(`https://${trimmed}`);
+        addTrustedRecoveryHost(allowedHosts, parsed.host);
+      } catch {
+        // Ignore invalid entries
+      }
     }
   }
 
@@ -871,6 +917,11 @@ function isAllowedRecoveryOrigin(req: Request): boolean {
     } catch {
       return false;
     }
+  }
+
+  // Reject browser requests lacking Origin/Referer when Sec-Fetch-Site isn't explicitly same-origin/none
+  if (secFetchSite && secFetchSite.toLowerCase() !== 'same-origin' && secFetchSite.toLowerCase() !== 'none') {
+    return false;
   }
 
   return true;
@@ -1057,9 +1108,12 @@ apiRouter.post('/auth/master-recovery', async (req: Request, res: Response, next
         return;
       }
 
-      // Preserve id, email, role, permissions, and all other users untouched; update only passwordHash and salt.
+      // Preserve id, email, role, permissions, and all other Master/regular users untouched; update only principal account credentials.
       masterUser.passwordHash = hash;
       masterUser.salt = salt;
+      if (masterUser.mustSetPassword) {
+        masterUser.mustSetPassword = false;
+      }
       db.systemConfig.masterInitialized = true;
       await db.save();
 
@@ -1162,6 +1216,16 @@ apiRouter.post('/auth/first-access', async (req: Request, res: Response, next: N
       return;
     }
 
+    if (
+      (targetUser.role === 'master_owner' || targetUser.id === ORIGINAL_MASTER_OWNER_ID) &&
+      (db.systemConfig.masterInitialized || Boolean(targetUser.passwordHash && targetUser.salt))
+    ) {
+      res.status(403).json({
+        error: 'A conta Master Owner já foi inicializada. Utilize o login normal ou a recuperação administrativa.',
+      });
+      return;
+    }
+
     const isPendingFirstAccess =
       targetUser.mustSetPassword === true || !targetUser.passwordHash || !targetUser.salt;
     if (!isPendingFirstAccess) {
@@ -1219,7 +1283,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response, next: NextFunc
       return;
     }
 
-    const user = db.users.find(u => u.email.toLowerCase() === email.trim().toLowerCase());
+    const user = db.users.find(u => u.email.trim().toLowerCase() === email.trim().toLowerCase());
     if (!user || !user.active) {
       res.status(401).json({ error: 'Credenciais inválidas ou usuário inativo' });
       return;
@@ -1337,9 +1401,12 @@ function isValidBrazilianCnpjCheckDigits(digits: string): boolean {
 apiRouter.post('/auth/register-company', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = req.body || {};
-    if (typeof body.role === 'string' && body.role.trim().toLowerCase() === 'master_owner') {
+    if (
+      typeof body.role === 'string' &&
+      body.role.trim().toLowerCase() !== 'company_admin'
+    ) {
       res.status(403).json({
-        error: 'Não é permitido criar ou atribuir privilégios de Master Owner pelo cadastro público.'
+        error: 'Não é permitido criar ou atribuir privilégios de Master Owner ou perfil personalizado pelo cadastro público.'
       });
       return;
     }
@@ -1382,9 +1449,10 @@ apiRouter.post('/auth/register-company', async (req: Request, res: Response, nex
       return;
     }
 
-    // Never allow public flow to touch, hijack, or impersonate Master Owner accounts
+    // Never allow public flow to touch, hijack, or impersonate Master Owner account
     const masterEmailsNormalized = new Set(
       [
+        ORIGINAL_MASTER_OWNER_EMAIL,
         db.systemConfig.masterEmail,
         ...db.users.filter(u => u.role === 'master_owner').map(u => u.email)
       ].map(e => String(e || '').trim().toLowerCase())
@@ -1602,6 +1670,10 @@ apiRouter.get('/plans', (req: Request, res: Response) => {
 
 // Request plan or submit payment proof (company)
 apiRouter.post('/subscription/request', authenticate, (req: AuthRequest, res: Response) => {
+  if (req.user!.role === 'viewer') {
+    res.status(403).json({ error: 'Perfil sem permissão para solicitar planos ou assinaturas.' });
+    return;
+  }
   const company = req.company;
   if (!company) {
     res.status(400).json({ error: 'Nenhuma empresa associada' });
@@ -1828,6 +1900,12 @@ apiRouter.get('/master/config', authenticate, requireMaster, (req: AuthRequest, 
 
 apiRouter.put('/master/config', authenticate, requireMaster, async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
+    if (req.body?.masterEmail !== undefined || req.body?.masterInitialized !== undefined) {
+      res.status(403).json({
+        error: 'O e-mail oficial e o estado de inicialização do Master Owner são imutáveis.'
+      });
+      return;
+    }
     const { whatsappComercial, mensagemWhatsappPadrao, diasDemonstracao, nomePlataforma } = req.body;
     if (whatsappComercial) db.systemConfig.whatsappComercial = whatsappComercial.replace(/\D/g, '');
     if (mensagemWhatsappPadrao) db.systemConfig.mensagemWhatsappPadrao = mensagemWhatsappPadrao;
@@ -1855,7 +1933,7 @@ apiRouter.put('/master/config', authenticate, requireMaster, async (req: AuthReq
 apiRouter.get('/master/onboarding', authenticate, requireMaster, (_req: AuthRequest, res: Response) => {
   const snap = getOnboardingStatusSnapshot();
   const eligibleAdmins = db.users
-    .filter((u) => u.active && u.role !== 'master_owner' && !u.companyId)
+    .filter((u) => u.active && u.role !== 'master_owner' && u.id !== ORIGINAL_MASTER_OWNER_ID && !u.companyId)
     .map((u) => ({
       id: u.id,
       name: u.name,
@@ -2010,7 +2088,7 @@ apiRouter.get('/master/audit-logs', authenticate, requireMaster, (req: AuthReque
 
 // Inward Receipts List
 apiRouter.get('/logistics/receipts', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId ? (req.query.companyId as string) : req.user!.companyId;
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId ? (req.query.companyId as string) : req.user!.companyId;
   const receipts = companyId 
     ? db.logisticsReceipts.filter(r => r.companyId === companyId)
     : db.logisticsReceipts;
@@ -2083,7 +2161,7 @@ apiRouter.post('/logistics/receipts', authenticate, checkSubscription, (req: Aut
 
 // Inventory List
 apiRouter.get('/logistics/inventory', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId ? (req.query.companyId as string) : req.user!.companyId;
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId ? (req.query.companyId as string) : req.user!.companyId;
   const items = companyId ? db.inventory.filter(i => i.companyId === companyId) : db.inventory;
   res.json({ items });
 });
@@ -2227,7 +2305,7 @@ apiRouter.post('/logistics/movement', authenticate, checkSubscription, (req: Aut
 
 // Shipments / Despacho
 apiRouter.get('/logistics/shipments', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId ? (req.query.companyId as string) : req.user!.companyId;
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId ? (req.query.companyId as string) : req.user!.companyId;
   const shipments = companyId ? db.shipments.filter(s => s.companyId === companyId) : db.shipments;
   res.json({ shipments });
 });
@@ -2294,7 +2372,7 @@ apiRouter.patch('/logistics/shipments/:id/status', authenticate, checkSubscripti
   const companyId = req.company?.id || req.user!.companyId;
   const { status, ocorrenciaTexto } = req.body;
 
-  const shipment = db.shipments.find(s => s.id === id && (req.user!.role === 'master_owner' || s.companyId === companyId));
+  const shipment = db.shipments.find(s => s.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || s.companyId === companyId));
   if (!shipment) {
     res.status(404).json({ error: 'Ordem de expedição não encontrada' });
     return;
@@ -2331,7 +2409,7 @@ apiRouter.patch('/logistics/shipments/:id/status', authenticate, checkSubscripti
 
 // Units list
 apiRouter.get('/condo/units', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId ? (req.query.companyId as string) : req.user!.companyId;
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId ? (req.query.companyId as string) : req.user!.companyId;
   const units = companyId ? db.condoUnits.filter(u => u.companyId === companyId) : db.condoUnits;
   res.json({ units });
 });
@@ -2398,10 +2476,10 @@ apiRouter.post('/condo/units', authenticate, checkSubscription, (req: AuthReques
 
 // Packages list
 apiRouter.get('/condo/packages', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId
     ? (req.query.companyId as string)
-    : (req.user!.companyId || (req.query.companyId as string) || req.company?.id || db.companies[0]?.id);
-  const packages = companyId ? db.condoPackages.filter(p => p.companyId === companyId) : db.condoPackages;
+    : (req.user!.companyId || req.company?.id || '');
+  const packages = companyId ? db.condoPackages.filter(p => p.companyId === companyId) : (isOfficialMasterOwner(req.user, db.systemConfig) ? db.condoPackages : []);
   res.json({ packages });
 });
 
@@ -2519,7 +2597,7 @@ apiRouter.post('/condo/packages/:id/notify', authenticate, checkSubscription, (r
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
 
-  const pkg = db.condoPackages.find(p => p.id === id && (req.user!.role === 'master_owner' || p.companyId === companyId));
+  const pkg = db.condoPackages.find(p => p.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || p.companyId === companyId));
   if (!pkg) {
     res.status(404).json({ error: 'Encomenda não encontrada' });
     return;
@@ -2560,7 +2638,7 @@ apiRouter.post('/condo/packages/:id/pickup', authenticate, checkSubscription, (r
   const companyId = getEffectiveCompanyId(req);
   const { pin, retiradoPor, documentoRetirada } = req.body;
 
-  const pkg = db.condoPackages.find(p => p.id === id && (req.user!.role === 'master_owner' || p.companyId === companyId));
+  const pkg = db.condoPackages.find(p => p.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || p.companyId === companyId));
   if (!pkg) {
     res.status(404).json({ error: 'Encomenda não encontrada' });
     return;
@@ -2572,7 +2650,7 @@ apiRouter.post('/condo/packages/:id/pickup', authenticate, checkSubscription, (r
   }
 
   // Strict PIN verification (mandatory for all non-master operators)
-  if (req.user!.role !== 'master_owner') {
+  if (!isOfficialMasterOwner(req.user, db.systemConfig)) {
     if (!pin || String(pin).trim() !== pkg.codigoRetiradaPin) {
       res.status(400).json({ error: 'Código PIN de retirada incorreto ou não fornecido' });
       return;
@@ -2604,7 +2682,7 @@ apiRouter.patch('/condo/packages/:id', authenticate, checkSubscription, (req: Au
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
 
-  const pkg = db.condoPackages.find(p => p.id === id && (req.user!.role === 'master_owner' || p.companyId === companyId));
+  const pkg = db.condoPackages.find(p => p.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || p.companyId === companyId));
   if (!pkg) {
     res.status(404).json({ error: 'Encomenda não encontrada' });
     return;
@@ -2642,7 +2720,7 @@ apiRouter.patch('/condo/packages/:id', authenticate, checkSubscription, (req: Au
 
 // Dashboard Metrics (Condo & Portaria analytics)
 apiRouter.get('/dashboard/metrics', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId
     ? (req.query.companyId as string)
     : (req.user!.companyId || (req.query.companyId as string) || req.company?.id || db.companies[0]?.id);
 
@@ -2787,7 +2865,7 @@ apiRouter.get('/dashboard/metrics', authenticate, checkSubscription, (req: AuthR
 
 // Visitors & Access Control
 apiRouter.get('/condo/visitors', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId
     ? (req.query.companyId as string)
     : (req.user!.companyId || (req.query.companyId as string) || req.company?.id || db.companies[0]?.id);
   const visitors = companyId ? db.condoVisitors.filter(v => v.companyId === companyId) : db.condoVisitors;
@@ -2846,7 +2924,7 @@ apiRouter.patch('/condo/visitors/:id/checkout', authenticate, checkSubscription,
   const { id } = req.params;
   const companyId = req.company?.id || req.user!.companyId;
 
-  const visitor = db.condoVisitors.find(v => v.id === id && (req.user!.role === 'master_owner' || v.companyId === companyId));
+  const visitor = db.condoVisitors.find(v => v.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || v.companyId === companyId));
   if (!visitor) {
     res.status(404).json({ error: 'Visitante não encontrado' });
     return;
@@ -3244,7 +3322,7 @@ apiRouter.post('/seed-sample-data', authenticate, requireMaster, (req: AuthReque
 
 // List deliveries with multi-criteria filters
 apiRouter.get('/deliveries', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId
     ? (req.query.companyId as string)
     : getEffectiveCompanyId(req);
 
@@ -3553,7 +3631,7 @@ const handleUpdateDelivery = (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
   const { id } = req.params;
 
-  const delivery = db.deliveries.find(d => d.id === id && (req.user!.role === 'master_owner' || d.companyId === companyId));
+  const delivery = db.deliveries.find(d => d.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || d.companyId === companyId));
   if (!delivery) {
     res.status(404).json({ error: 'Entrega não encontrada' });
     return;
@@ -3592,7 +3670,7 @@ apiRouter.delete('/deliveries/:id', authenticate, checkSubscription, (req: AuthR
   const companyId = getEffectiveCompanyId(req);
   const { id } = req.params;
 
-  const index = db.deliveries.findIndex(d => d.id === id && (req.user!.role === 'master_owner' || d.companyId === companyId));
+  const index = db.deliveries.findIndex(d => d.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || d.companyId === companyId));
   if (index === -1) {
     res.status(404).json({ error: 'Entrega não encontrada' });
     return;
@@ -3616,7 +3694,7 @@ apiRouter.delete('/deliveries/:id', authenticate, checkSubscription, (req: AuthR
 
 // List company fleet vehicles
 apiRouter.get('/fleet/vehicles', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId
     ? (req.query.companyId as string)
     : getEffectiveCompanyId(req);
 
@@ -3696,7 +3774,7 @@ apiRouter.patch('/fleet/vehicles/:id', authenticate, checkSubscription, (req: Au
   const companyId = getEffectiveCompanyId(req);
   const { id } = req.params;
 
-  const vehicle = db.vehicles.find(v => v.id === id && (req.user!.role === 'master_owner' || v.companyId === companyId));
+  const vehicle = db.vehicles.find(v => v.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || v.companyId === companyId));
   if (!vehicle) {
     res.status(404).json({ error: 'Veículo não encontrado' });
     return;
@@ -3754,9 +3832,9 @@ apiRouter.post('/fleet/vehicles/:id/location', authenticate, (req: AuthRequest, 
     return;
   }
 
-  // Security: only master owner, company admin, or assigned driver can send GPS updates
-  if (req.user!.role !== 'master_owner') {
-    if (vehicle.companyId !== req.user!.companyId) {
+  // Security: only official master owner, company admin/staff, or assigned driver can send GPS updates
+  if (!isOfficialMasterOwner(req.user, db.systemConfig)) {
+    if (vehicle.companyId !== req.user!.companyId || req.user!.role === 'viewer') {
       res.status(403).json({ error: 'Acesso negado para este veículo' });
       return;
     }
@@ -3831,7 +3909,7 @@ apiRouter.post('/fleet/vehicles/:id/location', authenticate, (req: AuthRequest, 
 apiRouter.get('/fleet/vehicles/:id', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
   const { id } = req.params;
-  const vehicle = db.vehicles.find(v => v.id === id && (req.user!.role === 'master_owner' || v.companyId === companyId));
+  const vehicle = db.vehicles.find(v => v.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || v.companyId === companyId));
   if (!vehicle) {
     res.status(404).json({ error: 'Veículo não encontrado' });
     return;
@@ -3843,7 +3921,7 @@ apiRouter.get('/fleet/vehicles/:id', authenticate, checkSubscription, (req: Auth
 apiRouter.get('/fleet/vehicles/:id/location', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
   const { id } = req.params;
-  const vehicle = db.vehicles.find(v => v.id === id && (req.user!.role === 'master_owner' || v.companyId === companyId));
+  const vehicle = db.vehicles.find(v => v.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || v.companyId === companyId));
   if (!vehicle) {
     res.status(404).json({ error: 'Veículo não encontrado' });
     return;
@@ -3996,7 +4074,7 @@ apiRouter.post('/routes/plan-suggest', authenticate, checkSubscription, async (r
 
 // List company routes
 apiRouter.get('/routes', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId
     ? (req.query.companyId as string)
     : getEffectiveCompanyId(req);
 
@@ -4022,7 +4100,7 @@ apiRouter.get('/routes/:id', authenticate, checkSubscription, (req: AuthRequest,
   }
 
   // Security: check company isolation and driver isolation
-  if (req.user!.role !== 'master_owner') {
+  if (!isOfficialMasterOwner(req.user, db.systemConfig)) {
     if (route.companyId !== req.user!.companyId) {
       res.status(403).json({ error: 'Acesso negado a esta rota' });
       return;
@@ -4132,7 +4210,7 @@ apiRouter.put('/routes/:id', authenticate, checkSubscription, (req: AuthRequest,
   const companyId = getEffectiveCompanyId(req);
   const { id } = req.params;
 
-  const route = db.routes.find(r => r.id === id && (req.user!.role === 'master_owner' || r.companyId === companyId));
+  const route = db.routes.find(r => r.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || r.companyId === companyId));
   if (!route) {
     res.status(404).json({ error: 'Rota não encontrada' });
     return;
@@ -4185,12 +4263,12 @@ apiRouter.post('/routes/:id/review', authenticate, checkSubscription, (req: Auth
   const companyId = getEffectiveCompanyId(req);
   const { id } = req.params;
 
-  if (req.user!.role !== 'master_owner' && req.user!.role !== 'company_admin' && req.user!.role !== 'dispatcher') {
+  if (!isOfficialMasterOwner(req.user, db.systemConfig) && req.user!.role !== 'company_admin' && req.user!.role !== 'dispatcher') {
     res.status(403).json({ error: 'Apenas roteiristas ou administradores podem submeter rotas à revisão.' });
     return;
   }
 
-  const route = db.routes.find(r => r.id === id && (req.user!.role === 'master_owner' || r.companyId === companyId));
+  const route = db.routes.find(r => r.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || r.companyId === companyId));
   if (!route) {
     res.status(404).json({ error: 'Rota não encontrada' });
     return;
@@ -4226,12 +4304,12 @@ apiRouter.post('/routes/:id/publish', authenticate, checkSubscription, (req: Aut
   const { id } = req.params;
 
   // Authorization check: only master_owner, company_admin, or dispatcher can publish
-  if (req.user!.role !== 'master_owner' && req.user!.role !== 'company_admin' && req.user!.role !== 'dispatcher') {
+  if (!isOfficialMasterOwner(req.user, db.systemConfig) && req.user!.role !== 'company_admin' && req.user!.role !== 'dispatcher') {
     res.status(403).json({ error: 'Apenas roteiristas ou administradores da empresa têm permissão para publicar rotas.' });
     return;
   }
 
-  const route = db.routes.find(r => r.id === id && (req.user!.role === 'master_owner' || r.companyId === companyId));
+  const route = db.routes.find(r => r.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || r.companyId === companyId));
   if (!route) {
     res.status(404).json({ error: 'Rota não encontrada' });
     return;
@@ -4307,7 +4385,7 @@ apiRouter.post('/routes/:id/start', authenticate, (req: AuthRequest, res: Respon
   }
 
   // Authorization & Multi-tenant check
-  if (req.user!.role !== 'master_owner') {
+  if (!isOfficialMasterOwner(req.user, db.systemConfig)) {
     if (route.companyId !== req.user!.companyId) {
       res.status(403).json({ error: 'Acesso negado a esta rota' });
       return;
@@ -4361,17 +4439,17 @@ apiRouter.post('/routes/:id/stops/:stopIndex/status', authenticate, (req: AuthRe
   }
 
   // Security: check company isolation and driver assignment
-  if (req.user!.role !== 'master_owner') {
+  if (!isOfficialMasterOwner(req.user, db.systemConfig)) {
     if (route.companyId !== req.user!.companyId) {
       res.status(403).json({ error: 'Acesso negado a esta rota' });
       return;
     }
-    if (req.user!.role === 'driver' && route.motoristaId && route.motoristaId !== req.user!.id) {
-      res.status(403).json({ error: 'Você não é o motorista atribuído a esta rota' });
+    if (!['company_admin', 'dispatcher', 'driver'].includes(req.user!.role)) {
+      res.status(403).json({ error: 'Perfil sem permissão para alterar paradas de rota de entrega' });
       return;
     }
-    if (req.user!.role === 'operator') {
-      res.status(403).json({ error: 'Operador predial não possui permissão para alterar paradas de rota de entrega' });
+    if (req.user!.role === 'driver' && route.motoristaId && route.motoristaId !== req.user!.id) {
+      res.status(403).json({ error: 'Você não é o motorista atribuído a esta rota' });
       return;
     }
   }
@@ -4456,6 +4534,10 @@ apiRouter.post('/routes/:id/stops/:stopIndex/status', authenticate, (req: AuthRe
 
 // Get active route for currently logged-in driver
 apiRouter.get('/driver/active-route', authenticate, (req: AuthRequest, res: Response) => {
+  if (!isOfficialMasterOwner(req.user, db.systemConfig) && (!req.user!.companyId || req.user!.role === 'viewer')) {
+    res.json({ activeRoute: null });
+    return;
+  }
   // Find published or in_progress route for this driver
   const active = db.routes.find(r =>
     r.motoristaId === req.user!.id &&
@@ -4477,7 +4559,7 @@ apiRouter.get('/driver/active-route', authenticate, (req: AuthRequest, res: Resp
 
 // Get company profile
 apiRouter.get('/company/profile', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId
     ? (req.query.companyId as string)
     : getEffectiveCompanyId(req);
 
@@ -4492,7 +4574,7 @@ apiRouter.get('/company/profile', authenticate, checkSubscription, (req: AuthReq
 
 // Update company profile
 apiRouter.put('/company/profile', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId
     ? (req.query.companyId as string)
     : getEffectiveCompanyId(req);
 
@@ -4560,7 +4642,7 @@ apiRouter.put('/company/profile', authenticate, checkSubscription, (req: AuthReq
 
 // List users of company
 apiRouter.get('/company/users', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId
     ? (req.query.companyId as string)
     : getEffectiveCompanyId(req);
 
@@ -4581,13 +4663,13 @@ apiRouter.get('/company/users', authenticate, checkSubscription, (req: AuthReque
 
 // Register user for company (e.g. driver or dispatcher)
 apiRouter.post('/company/users', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  if (!['master_owner', 'company_admin'].includes(req.user!.role)) {
+  if (!isOfficialMasterOwner(req.user, db.systemConfig) && req.user!.role !== 'company_admin') {
     res.status(403).json({ error: 'Permissão negada. Apenas administradores ou Master Owner podem cadastrar usuários.' });
     return;
   }
 
   const requestedCompanyId =
-    req.user!.role === 'master_owner' && req.body?.companyId && typeof req.body.companyId === 'string'
+    isOfficialMasterOwner(req.user, db.systemConfig) && req.body?.companyId && typeof req.body.companyId === 'string'
       ? req.body.companyId.trim()
       : getEffectiveCompanyId(req);
 
@@ -4604,6 +4686,11 @@ apiRouter.post('/company/users', authenticate, checkSubscription, (req: AuthRequ
     return;
   }
 
+  if (String(role).trim().toLowerCase() === 'master_owner') {
+    res.status(403).json({ error: 'Não é permitido criar ou atribuir privilégios Master Owner.' });
+    return;
+  }
+
   const allowedCompanyRoles = ['company_admin', 'dispatcher', 'driver', 'operator', 'concierge', 'financial', 'client', 'viewer'];
   if (!allowedCompanyRoles.includes(role)) {
     res.status(400).json({ error: 'Perfil de acesso inválido ou não permitido para cadastro via empresa.' });
@@ -4611,6 +4698,13 @@ apiRouter.post('/company/users', authenticate, checkSubscription, (req: AuthRequ
   }
 
   const cleanEmail = String(email).trim().toLowerCase();
+  if (
+    cleanEmail === ORIGINAL_MASTER_OWNER_EMAIL.toLowerCase() ||
+    cleanEmail === getOfficialMasterEmailNormalized(db.systemConfig)
+  ) {
+    res.status(403).json({ error: 'Este e-mail pertence à conta oficial Master Owner.' });
+    return;
+  }
   const exists = db.users.find(u => u.email.toLowerCase() === cleanEmail);
   if (exists) {
     res.status(409).json({ error: 'Já existe um usuário cadastrado com este e-mail.' });
@@ -4754,7 +4848,7 @@ apiRouter.post('/fiscal/config', authenticate, checkSubscription, (req: AuthRequ
 
 // List Fiscal Documents
 apiRouter.get('/fiscal/documents', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId
     ? (req.query.companyId as string)
     : getEffectiveCompanyId(req);
 
@@ -4781,7 +4875,7 @@ apiRouter.get('/fiscal/documents', authenticate, checkSubscription, (req: AuthRe
 apiRouter.get('/fiscal/documents/:id', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const doc = db.fiscalDocuments.find(d => d.id === id && (req.user!.role === 'master_owner' || d.companyId === companyId));
+  const doc = db.fiscalDocuments.find(d => d.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || d.companyId === companyId));
   if (!doc) {
     res.status(404).json({ error: 'Documento fiscal não encontrado' });
     return;
@@ -5229,7 +5323,7 @@ apiRouter.post('/fiscal/documents/:id/cancel', authenticate, checkSubscription, 
   const { motivo } = req.body;
   const companyId = getEffectiveCompanyId(req);
 
-  const doc = db.fiscalDocuments.find(d => d.id === id && (req.user!.role === 'master_owner' || d.companyId === companyId));
+  const doc = db.fiscalDocuments.find(d => d.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || d.companyId === companyId));
   if (!doc) {
     res.status(404).json({ error: 'Documento fiscal não encontrado' });
     return;
@@ -5278,7 +5372,7 @@ apiRouter.post('/fiscal/documents/:id/correction', authenticate, checkSubscripti
   const { correcao } = req.body;
   const companyId = getEffectiveCompanyId(req);
 
-  const doc = db.fiscalDocuments.find(d => d.id === id && (req.user!.role === 'master_owner' || d.companyId === companyId));
+  const doc = db.fiscalDocuments.find(d => d.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || d.companyId === companyId));
   if (!doc) {
     res.status(404).json({ error: 'Documento fiscal não encontrado' });
     return;
@@ -5325,7 +5419,7 @@ apiRouter.post('/fiscal/documents/:id/correction', authenticate, checkSubscripti
 
 // List Financial Records
 apiRouter.get('/financial/records', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId
     ? (req.query.companyId as string)
     : getEffectiveCompanyId(req);
 
@@ -5383,7 +5477,7 @@ apiRouter.post('/financial/records', authenticate, checkSubscription, (req: Auth
 
 // Financial Consolidated Summary
 apiRouter.get('/financial/summary', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId
     ? (req.query.companyId as string)
     : getEffectiveCompanyId(req);
 
@@ -5415,18 +5509,28 @@ apiRouter.get('/financial/summary', authenticate, checkSubscription, (req: AuthR
 
 // List Notifications
 apiRouter.get('/notifications', authenticate, (req: AuthRequest, res: Response) => {
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
+  if (!isMaster && (!req.user?.companyId || req.user.role === 'viewer')) {
+    res.status(403).json({ error: 'Acesso negado às notificações operacionais.' });
+    return;
+  }
   const companyId = getEffectiveCompanyId(req);
-  const list = db.notifications.filter(n => !n.companyId || n.companyId === companyId || req.user!.role === 'master_owner');
+  const list = db.notifications.filter(n => isMaster || !n.companyId || n.companyId === companyId);
   res.json({ notifications: list.slice(0, 50) });
 });
 
 // Mark Single Notification as Read
 apiRouter.post('/notifications/:id/read', authenticate, (req: AuthRequest, res: Response) => {
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
+  if (!isMaster && (!req.user?.companyId || req.user.role === 'viewer')) {
+    res.status(403).json({ error: 'Acesso negado às notificações operacionais.' });
+    return;
+  }
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
   const n = db.notifications.find(notif => notif.id === id);
   if (n) {
-    if (n.companyId && n.companyId !== companyId && req.user!.role !== 'master_owner') {
+    if (n.companyId && n.companyId !== companyId && !isMaster) {
       res.status(403).json({ error: 'Acesso negado a esta notificação' });
       return;
     }
@@ -5438,9 +5542,14 @@ apiRouter.post('/notifications/:id/read', authenticate, (req: AuthRequest, res: 
 
 // Mark All Notifications as Read
 apiRouter.post('/notifications/read-all', authenticate, (req: AuthRequest, res: Response) => {
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
+  if (!isMaster && (!req.user?.companyId || req.user.role === 'viewer')) {
+    res.status(403).json({ error: 'Acesso negado às notificações operacionais.' });
+    return;
+  }
   const companyId = getEffectiveCompanyId(req);
   db.notifications.forEach(n => {
-    if (!n.companyId || n.companyId === companyId || req.user!.role === 'master_owner') {
+    if (isMaster || !n.companyId || n.companyId === companyId) {
       n.lida = true;
     }
   });
@@ -5660,9 +5769,11 @@ apiRouter.post('/commerce/products', authenticate, checkSubscription, (req: Auth
     precoVenda,
     estoqueAtual,
     estoqueMinimo,
+    estoqueMaximo,
     unidade,
     fotoUrl,
-    idadeMinima
+    idadeMinima,
+    origemRegistro
   } = req.body;
 
   if (!modulo || (modulo !== 'adega' && modulo !== 'tabacaria')) {
@@ -5731,6 +5842,11 @@ apiRouter.post('/commerce/products', authenticate, checkSubscription, (req: Auth
     minAge = parseInt(idadeMinima, 10) >= 0 ? parseInt(idadeMinima, 10) : minAge;
   }
 
+  const maxStock =
+    estoqueMaximo !== undefined && parseInt(estoqueMaximo, 10) >= 0
+      ? parseInt(estoqueMaximo, 10)
+      : undefined;
+
   const newProduct: CommercialProduct = {
     id: crypto.randomUUID(),
     companyId,
@@ -5745,12 +5861,15 @@ apiRouter.post('/commerce/products', authenticate, checkSubscription, (req: Auth
     fornecedorId: fornecedorId || undefined,
     fornecedorNome: fornecedorNome || undefined,
     precoCusto: cost,
+    custoHistorico: cost > 0 ? [{ custo: cost, data: new Date().toISOString(), motivo: 'Cadastro inicial' }] : [],
     precoVenda: price,
     estoqueAtual: stock,
     estoqueMinimo: minStock,
+    estoqueMaximo: maxStock,
     unidade: unidade ? String(unidade).trim() : 'un',
     fotoUrl: fotoUrl ? String(fotoUrl).trim() : undefined,
     idadeMinima: minAge,
+    origemRegistro: origemRegistro || 'manual',
     ativo: true,
     criadoEm: new Date().toISOString(),
     atualizadoEm: new Date().toISOString()
@@ -5817,6 +5936,7 @@ apiRouter.put('/commerce/products/:id', authenticate, checkSubscription, (req: A
     precoCusto,
     precoVenda,
     estoqueMinimo,
+    estoqueMaximo,
     unidade,
     fotoUrl,
     idadeMinima,
@@ -5830,9 +5950,24 @@ apiRouter.put('/commerce/products/:id', authenticate, checkSubscription, (req: A
   if (fornecedorId !== undefined) product.fornecedorId = fornecedorId;
   if (fornecedorNome !== undefined) product.fornecedorNome = fornecedorNome;
   if (codigoBarras !== undefined) product.codigoBarras = String(codigoBarras).trim();
-  if (precoCusto !== undefined) product.precoCusto = parseFloat(precoCusto) >= 0 ? parseFloat(precoCusto) : product.precoCusto;
+  if (precoCusto !== undefined) {
+    const nextCost = parseFloat(precoCusto);
+    if (!isNaN(nextCost) && nextCost >= 0 && nextCost !== product.precoCusto) {
+      product.custoAnterior = product.precoCusto;
+      product.precoCusto = nextCost;
+      if (!Array.isArray(product.custoHistorico)) product.custoHistorico = [];
+      product.custoHistorico.push({
+        custo: nextCost,
+        data: new Date().toISOString(),
+        fornecedorId: product.fornecedorId,
+        fornecedorNome: product.fornecedorNome,
+        motivo: 'Edição manual de cadastro',
+      });
+    }
+  }
   if (precoVenda !== undefined) product.precoVenda = parseFloat(precoVenda) >= 0 ? parseFloat(precoVenda) : product.precoVenda;
   if (estoqueMinimo !== undefined) product.estoqueMinimo = parseInt(estoqueMinimo, 10) >= 0 ? parseInt(estoqueMinimo, 10) : product.estoqueMinimo;
+  if (estoqueMaximo !== undefined) product.estoqueMaximo = parseInt(estoqueMaximo, 10) >= 0 ? parseInt(estoqueMaximo, 10) : product.estoqueMaximo;
   if (unidade !== undefined) product.unidade = String(unidade).trim();
   if (fotoUrl !== undefined) product.fotoUrl = String(fotoUrl).trim();
   if (classificacaoLegal !== undefined) {
@@ -6127,8 +6262,8 @@ apiRouter.post('/commerce/cash/open', authenticate, checkSubscription, (req: Aut
   const { modulo, saldoInicial } = req.body;
 
   // 1. Role / Permissions check
-  const allowedRoles = ['master_owner', 'company_admin', 'financial', 'operator', 'dispatcher'];
-  if (!allowedRoles.includes(req.user!.role)) {
+  const allowedRoles = ['company_admin', 'financial', 'operator', 'dispatcher'];
+  if (!isOfficialMasterOwner(req.user, db.systemConfig) && !allowedRoles.includes(req.user!.role)) {
     res.status(403).json({ error: 'Permissão negada. Apenas operadores e administradores autorizados podem abrir o caixa.' });
     return;
   }
@@ -6290,8 +6425,8 @@ apiRouter.post(['/commerce/cash/close', '/commerce/cash/:id/close'], authenticat
   const sessionId = req.params.id || req.body.sessionId;
   const { saldoContadoDinheiro, observacoesFechamento, observacoes } = req.body;
 
-  const allowedRoles = ['master_owner', 'company_admin', 'financial', 'operator', 'dispatcher'];
-  if (!allowedRoles.includes(req.user!.role)) {
+  const allowedRoles = ['company_admin', 'financial', 'operator', 'dispatcher'];
+  if (!isOfficialMasterOwner(req.user, db.systemConfig) && !allowedRoles.includes(req.user!.role)) {
     res.status(403).json({ error: 'Permissão negada para fechamento de caixa.' });
     return;
   }
@@ -7161,10 +7296,21 @@ apiRouter.post('/commerce/purchases', authenticate, checkSubscription, (req: Aut
       total: itemTotal
     });
 
-    // Update product stock and cost
+    // Update product stock and cost history
     const qtdAnt = product.estoqueAtual;
     product.estoqueAtual = qtdAnt + qty;
-    product.precoCusto = cost;
+    if (cost > 0 && cost !== product.precoCusto) {
+      product.custoAnterior = product.precoCusto;
+      product.precoCusto = cost;
+      if (!Array.isArray(product.custoHistorico)) product.custoHistorico = [];
+      product.custoHistorico.push({
+        custo: cost,
+        data: new Date().toISOString(),
+        fornecedorId: fornecedorId || undefined,
+        fornecedorNome,
+        motivo: `Compra NF ${numeroNota || 'S/N'}`,
+      });
+    }
     product.atualizadoEm = new Date().toISOString();
 
     db.commercialStockMovements.push({
@@ -7177,6 +7323,7 @@ apiRouter.post('/commerce/purchases', authenticate, checkSubscription, (req: Aut
       quantidade: qty,
       quantidadeAnterior: qtdAnt,
       quantidadeNova: product.estoqueAtual,
+      custoUnitarioNoMovimento: cost,
       motivo: `Entrada por compra - NF ${numeroNota || 'S/N'} (${fornecedorNome})`,
       usuarioId: req.user!.id,
       usuarioNome: req.user!.name,
@@ -8462,13 +8609,13 @@ export function computePreventionAlerts(companyId: string): { alerts: Prevention
 
 // 1. GET /api/prevention/alerts — List prevention alerts & metrics for effective company
 apiRouter.get('/prevention/alerts', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const allowedRoles = ['master_owner', 'company_admin', 'dispatcher', 'operator', 'concierge'];
-  if (!allowedRoles.includes(req.user!.role)) {
+  const allowedRoles = ['company_admin', 'dispatcher', 'operator', 'concierge'];
+  if (!isOfficialMasterOwner(req.user, db.systemConfig) && !allowedRoles.includes(req.user!.role)) {
     res.status(403).json({ error: 'Acesso restrito à equipe operacional e administrativa.' });
     return;
   }
 
-  const companyId = req.user!.role === 'master_owner' && req.query.companyId
+  const companyId = isOfficialMasterOwner(req.user, db.systemConfig) && req.query.companyId
     ? String(req.query.companyId)
     : getEffectiveCompanyId(req);
 
@@ -8483,8 +8630,8 @@ apiRouter.get('/prevention/alerts', authenticate, checkSubscription, (req: AuthR
 
 // 2. POST /api/prevention/resolve — Mark an alert as handled / resolved
 apiRouter.post('/prevention/resolve', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const allowedRoles = ['master_owner', 'company_admin', 'dispatcher', 'operator', 'concierge'];
-  if (!allowedRoles.includes(req.user!.role)) {
+  const allowedRoles = ['company_admin', 'dispatcher', 'operator', 'concierge'];
+  if (!isOfficialMasterOwner(req.user, db.systemConfig) && !allowedRoles.includes(req.user!.role)) {
     res.status(403).json({ error: 'Sem permissão para resolver alertas de prevenção.' });
     return;
   }
@@ -8533,8 +8680,8 @@ apiRouter.post('/prevention/resolve', authenticate, checkSubscription, (req: Aut
 
 // 3. POST /api/prevention/renotify-package — Re-notify condo resident with secure PIN
 apiRouter.post('/prevention/renotify-package', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const allowedRoles = ['master_owner', 'company_admin', 'operator', 'concierge'];
-  if (!allowedRoles.includes(req.user!.role)) {
+  const allowedRoles = ['company_admin', 'operator', 'concierge'];
+  if (!isOfficialMasterOwner(req.user, db.systemConfig) && !allowedRoles.includes(req.user!.role)) {
     res.status(403).json({ error: 'Sem permissão para reenviar notificações prediais.' });
     return;
   }
@@ -8586,8 +8733,8 @@ apiRouter.post('/prevention/renotify-package', authenticate, checkSubscription, 
 
 // 4. POST /api/prevention/reschedule-delivery — Release delivery for contingency re-routing
 apiRouter.post('/prevention/reschedule-delivery', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
-  const allowedRoles = ['master_owner', 'company_admin', 'dispatcher'];
-  if (!allowedRoles.includes(req.user!.role)) {
+  const allowedRoles = ['company_admin', 'dispatcher'];
+  if (!isOfficialMasterOwner(req.user, db.systemConfig) && !allowedRoles.includes(req.user!.role)) {
     res.status(403).json({ error: 'Sem permissão de roteirização/despacho para reagendar entregas.' });
     return;
   }
@@ -8658,15 +8805,15 @@ apiRouter.post('/prevention/reschedule-delivery', authenticate, checkSubscriptio
 // 1. Overview & Metrics
 apiRouter.get('/warehouses/overview/metrics', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const warehouses = req.user!.role === 'master_owner' && !req.query.companyId
+  const warehouses = isOfficialMasterOwner(req.user, db.systemConfig) && !req.query.companyId
     ? db.warehouses
     : db.warehouses.filter(w => w.companyId === companyId);
 
-  const transfers = req.user!.role === 'master_owner' && !req.query.companyId
+  const transfers = isOfficialMasterOwner(req.user, db.systemConfig) && !req.query.companyId
     ? db.warehouseTransfers
     : db.warehouseTransfers.filter(t => t.companyId === companyId);
 
-  const audits = req.user!.role === 'master_owner' && !req.query.companyId
+  const audits = isOfficialMasterOwner(req.user, db.systemConfig) && !req.query.companyId
     ? db.warehouseAudits
     : db.warehouseAudits.filter(a => a.companyId === companyId);
 
@@ -8739,7 +8886,7 @@ apiRouter.get('/warehouses/overview/metrics', authenticate, checkSubscription, (
 // 2. List Warehouses (CDs)
 apiRouter.get('/warehouses', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const warehouses = req.user!.role === 'master_owner' && !req.query.companyId
+  const warehouses = isOfficialMasterOwner(req.user, db.systemConfig) && !req.query.companyId
     ? db.warehouses
     : db.warehouses.filter(w => w.companyId === companyId);
 
@@ -8871,7 +9018,7 @@ apiRouter.post('/warehouses', authenticate, checkSubscription, (req: AuthRequest
 // Transfers & Inventory Audits literal GET routes MUST precede /warehouses/:id
 apiRouter.get('/warehouses/transfers', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const transfers = req.user!.role === 'master_owner' && !req.query.companyId
+  const transfers = isOfficialMasterOwner(req.user, db.systemConfig) && !req.query.companyId
     ? db.warehouseTransfers
     : db.warehouseTransfers.filter(t => t.companyId === companyId);
 
@@ -8880,7 +9027,7 @@ apiRouter.get('/warehouses/transfers', authenticate, checkSubscription, (req: Au
 
 apiRouter.get('/warehouses/audits', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const audits = req.user!.role === 'master_owner' && !req.query.companyId
+  const audits = isOfficialMasterOwner(req.user, db.systemConfig) && !req.query.companyId
     ? db.warehouseAudits
     : db.warehouseAudits.filter(a => a.companyId === companyId);
 
@@ -8891,7 +9038,7 @@ apiRouter.get('/warehouses/audits', authenticate, checkSubscription, (req: AuthR
 apiRouter.get('/warehouses/:id', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const warehouse = db.warehouses.find(w => w.id === id && (req.user!.role === 'master_owner' || w.companyId === companyId));
+  const warehouse = db.warehouses.find(w => w.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || w.companyId === companyId));
 
   if (!warehouse) {
     res.status(404).json({ error: 'Centro de Distribuição não encontrado.' });
@@ -8928,7 +9075,7 @@ apiRouter.get('/warehouses/:id', authenticate, checkSubscription, (req: AuthRequ
 apiRouter.put('/warehouses/:id', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const warehouse = db.warehouses.find(w => w.id === id && (req.user!.role === 'master_owner' || w.companyId === companyId));
+  const warehouse = db.warehouses.find(w => w.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || w.companyId === companyId));
 
   if (!warehouse) {
     res.status(404).json({ error: 'Centro de Distribuição não encontrado.' });
@@ -8993,7 +9140,7 @@ apiRouter.put('/warehouses/:id', authenticate, checkSubscription, (req: AuthRequ
 apiRouter.delete('/warehouses/:id', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const warehouse = db.warehouses.find(w => w.id === id && (req.user!.role === 'master_owner' || w.companyId === companyId));
+  const warehouse = db.warehouses.find(w => w.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || w.companyId === companyId));
 
   if (!warehouse) {
     res.status(404).json({ error: 'Centro de Distribuição não encontrado.' });
@@ -9031,7 +9178,7 @@ apiRouter.delete('/warehouses/:id', authenticate, checkSubscription, (req: AuthR
 apiRouter.post('/warehouses/:id/positions', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const warehouse = db.warehouses.find(w => w.id === id && (req.user!.role === 'master_owner' || w.companyId === companyId));
+  const warehouse = db.warehouses.find(w => w.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || w.companyId === companyId));
 
   if (!warehouse) {
     res.status(404).json({ error: 'Centro de Distribuição não encontrado.' });
@@ -9093,7 +9240,7 @@ apiRouter.post('/warehouses/:id/positions', authenticate, checkSubscription, (re
 apiRouter.post('/warehouses/:id/positions/generate-matrix', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const warehouse = db.warehouses.find(w => w.id === id && (req.user!.role === 'master_owner' || w.companyId === companyId));
+  const warehouse = db.warehouses.find(w => w.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || w.companyId === companyId));
 
   if (!warehouse) {
     res.status(404).json({ error: 'Centro de Distribuição não encontrado.' });
@@ -9173,7 +9320,7 @@ apiRouter.post('/warehouses/:id/positions/generate-matrix', authenticate, checkS
 apiRouter.patch('/warehouses/:id/positions/:positionId', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id, positionId } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const warehouse = db.warehouses.find(w => w.id === id && (req.user!.role === 'master_owner' || w.companyId === companyId));
+  const warehouse = db.warehouses.find(w => w.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || w.companyId === companyId));
 
   if (!warehouse) {
     res.status(404).json({ error: 'Centro de Distribuição não encontrado.' });
@@ -9214,7 +9361,7 @@ apiRouter.patch('/warehouses/:id/positions/:positionId', authenticate, checkSubs
 apiRouter.post('/warehouses/:id/positions/:positionId/allocate', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id, positionId } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const warehouse = db.warehouses.find(w => w.id === id && (req.user!.role === 'master_owner' || w.companyId === companyId));
+  const warehouse = db.warehouses.find(w => w.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || w.companyId === companyId));
 
   if (!warehouse) {
     res.status(404).json({ error: 'Centro de Distribuição não encontrado.' });
@@ -9288,7 +9435,7 @@ apiRouter.post('/warehouses/:id/positions/:positionId/allocate', authenticate, c
 apiRouter.post('/warehouses/:id/positions/:positionId/deallocate', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id, positionId } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const warehouse = db.warehouses.find(w => w.id === id && (req.user!.role === 'master_owner' || w.companyId === companyId));
+  const warehouse = db.warehouses.find(w => w.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || w.companyId === companyId));
 
   if (!warehouse) {
     res.status(404).json({ error: 'Centro de Distribuição não encontrado.' });
@@ -9376,8 +9523,8 @@ apiRouter.post('/warehouses/transfers', authenticate, checkSubscription, (req: A
     return;
   }
 
-  const cdOrigem = db.warehouses.find(w => w.id === cdOrigemId && (req.user!.role === 'master_owner' || w.companyId === companyId));
-  const cdDestino = db.warehouses.find(w => w.id === cdDestinoId && (req.user!.role === 'master_owner' || w.companyId === companyId));
+  const cdOrigem = db.warehouses.find(w => w.id === cdOrigemId && (isOfficialMasterOwner(req.user, db.systemConfig) || w.companyId === companyId));
+  const cdDestino = db.warehouses.find(w => w.id === cdDestinoId && (isOfficialMasterOwner(req.user, db.systemConfig) || w.companyId === companyId));
 
   if (!cdOrigem || !cdDestino) {
     res.status(404).json({ error: 'Centro de Distribuição de origem ou destino não encontrado.' });
@@ -9441,7 +9588,7 @@ apiRouter.post('/warehouses/transfers', authenticate, checkSubscription, (req: A
 apiRouter.patch('/warehouses/transfers/:id/status', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const transfer = db.warehouseTransfers.find(t => t.id === id && (req.user!.role === 'master_owner' || t.companyId === companyId));
+  const transfer = db.warehouseTransfers.find(t => t.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || t.companyId === companyId));
 
   if (!transfer) {
     res.status(404).json({ error: 'Transferência não encontrada.' });
@@ -9466,8 +9613,8 @@ apiRouter.patch('/warehouses/transfers/:id/status', authenticate, checkSubscript
       transfer.recebidoPor = req.user!.name;
 
       // Executa movimentação física entre posições se configuradas
-      const cdOrigem = db.warehouses.find(w => w.id === transfer.cdOrigemId && (req.user!.role === 'master_owner' || w.companyId === transfer.companyId));
-      const cdDestino = db.warehouses.find(w => w.id === transfer.cdDestinoId && (req.user!.role === 'master_owner' || w.companyId === transfer.companyId));
+      const cdOrigem = db.warehouses.find(w => w.id === transfer.cdOrigemId && (isOfficialMasterOwner(req.user, db.systemConfig) || w.companyId === transfer.companyId));
+      const cdDestino = db.warehouses.find(w => w.id === transfer.cdDestinoId && (isOfficialMasterOwner(req.user, db.systemConfig) || w.companyId === transfer.companyId));
 
       if (cdOrigem && cdDestino) {
         transfer.itens.forEach(item => {
@@ -9538,7 +9685,7 @@ apiRouter.post('/warehouses/audits', authenticate, checkSubscription, (req: Auth
     return;
   }
 
-  const warehouse = db.warehouses.find(w => w.id === cdId && (req.user!.role === 'master_owner' || w.companyId === companyId));
+  const warehouse = db.warehouses.find(w => w.id === cdId && (isOfficialMasterOwner(req.user, db.systemConfig) || w.companyId === companyId));
   if (!warehouse) {
     res.status(404).json({ error: 'Centro de Distribuição não encontrado.' });
     return;
@@ -9605,7 +9752,7 @@ apiRouter.post('/warehouses/audits', authenticate, checkSubscription, (req: Auth
 apiRouter.put('/warehouses/audits/:id/counts', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const audit = db.warehouseAudits.find(a => a.id === id && (req.user!.role === 'master_owner' || a.companyId === companyId));
+  const audit = db.warehouseAudits.find(a => a.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || a.companyId === companyId));
 
   if (!audit) {
     res.status(404).json({ error: 'Sessão de inventário não encontrada.' });
@@ -9654,7 +9801,7 @@ apiRouter.put('/warehouses/audits/:id/counts', authenticate, checkSubscription, 
 apiRouter.post('/warehouses/audits/:id/finalize', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const audit = db.warehouseAudits.find(a => a.id === id && (req.user!.role === 'master_owner' || a.companyId === companyId));
+  const audit = db.warehouseAudits.find(a => a.id === id && (isOfficialMasterOwner(req.user, db.systemConfig) || a.companyId === companyId));
 
   if (!audit) {
     res.status(404).json({ error: 'Sessão de inventário não encontrada.' });
@@ -9722,7 +9869,7 @@ apiRouter.post('/warehouses/audits/:id/finalize', authenticate, checkSubscriptio
 // 1. Fulfillment Metrics & SLA Engine Overview
 apiRouter.get('/fulfillment/metrics', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
   
   const orders = isMaster && !req.query.companyId
     ? db.fulfillmentOrders
@@ -9829,7 +9976,7 @@ apiRouter.get('/fulfillment/metrics', authenticate, checkSubscription, (req: Aut
 // 2. List Fulfillment Orders
 apiRouter.get('/fulfillment/orders', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
   
   let orders = isMaster && !req.query.companyId
     ? db.fulfillmentOrders
@@ -9865,7 +10012,7 @@ apiRouter.get('/fulfillment/orders', authenticate, checkSubscription, (req: Auth
 apiRouter.get('/fulfillment/orders/:id', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
 
   const order = db.fulfillmentOrders.find(o => o.id === id && (isMaster || o.companyId === companyId));
   if (!order) {
@@ -9889,7 +10036,7 @@ apiRouter.get('/fulfillment/orders/:id', authenticate, checkSubscription, (req: 
 // 4. Create Fulfillment Order
 apiRouter.post('/fulfillment/orders', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
   if (!companyId) {
     res.status(400).json({ error: 'Empresa obrigatória' });
     return;
@@ -10032,7 +10179,7 @@ apiRouter.post('/fulfillment/orders', authenticate, checkSubscription, (req: Aut
 apiRouter.patch('/fulfillment/orders/:id/stage', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
 
   const order = db.fulfillmentOrders.find(o => o.id === id && (isMaster || o.companyId === companyId));
   if (!order) {
@@ -10097,7 +10244,7 @@ apiRouter.patch('/fulfillment/orders/:id/stage', authenticate, checkSubscription
 // 6. List Wave Picking Tasks
 apiRouter.get('/fulfillment/picking/waves', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
 
   const waves = isMaster && !req.query.companyId
     ? db.pickingTasks
@@ -10109,7 +10256,7 @@ apiRouter.get('/fulfillment/picking/waves', authenticate, checkSubscription, (re
 // 7. Create Wave Picking Task
 apiRouter.post('/fulfillment/picking/waves', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
   const { pedidosIds, tipo, operadorNome, cdId } = req.body;
 
   if (!pedidosIds || !Array.isArray(pedidosIds) || pedidosIds.length === 0) {
@@ -10195,7 +10342,7 @@ apiRouter.post('/fulfillment/picking/waves', authenticate, checkSubscription, (r
 apiRouter.patch('/fulfillment/picking/waves/:id/items', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
 
   const wave = db.pickingTasks.find(w => w.id === id && (isMaster || w.companyId === companyId));
   if (!wave) {
@@ -10263,7 +10410,7 @@ apiRouter.patch('/fulfillment/picking/waves/:id/items', authenticate, checkSubsc
 // 9. List Packing Tasks
 apiRouter.get('/fulfillment/packing/tasks', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
 
   const tasks = isMaster && !req.query.companyId
     ? db.packingTasks
@@ -10275,7 +10422,7 @@ apiRouter.get('/fulfillment/packing/tasks', authenticate, checkSubscription, (re
 // 10. Packing Station Check & Scale Weighing & Label Generation
 apiRouter.post('/fulfillment/packing/pack', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
   const {
     pedidoId,
     tipoEmbalagem,
@@ -10383,7 +10530,7 @@ apiRouter.post('/fulfillment/packing/pack', authenticate, checkSubscription, (re
 // 11. List Shipping Manifests
 apiRouter.get('/fulfillment/manifests', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
 
   const manifests = isMaster && !req.query.companyId
     ? db.shippingManifests
@@ -10395,7 +10542,7 @@ apiRouter.get('/fulfillment/manifests', authenticate, checkSubscription, (req: A
 // 12. Dispatch Manifest (Romaneio de Expedição + WMS Stock Deduction)
 apiRouter.post('/fulfillment/manifests', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
   const {
     cdId,
     transportadoraNome,
@@ -10510,7 +10657,7 @@ apiRouter.post('/fulfillment/manifests', authenticate, checkSubscription, (req: 
 // 13. Reverse Logistics List
 apiRouter.get('/fulfillment/reversa', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
 
   const tickets = isMaster && !req.query.companyId
     ? db.reverseLogistics
@@ -10522,7 +10669,7 @@ apiRouter.get('/fulfillment/reversa', authenticate, checkSubscription, (req: Aut
 // 14. Reverse Logistics Create Ticket
 apiRouter.post('/fulfillment/reversa', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
   const {
     pedidoOriginalId,
     motivo,
@@ -10600,7 +10747,7 @@ apiRouter.post('/fulfillment/reversa', authenticate, checkSubscription, (req: Au
 apiRouter.patch('/fulfillment/reversa/:id/triagem', authenticate, checkSubscription, (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const companyId = getEffectiveCompanyId(req);
-  const isMaster = req.user!.role === 'master_owner';
+  const isMaster = isOfficialMasterOwner(req.user, db.systemConfig);
 
   const ticket = db.reverseLogistics.find(t => t.id === id && (isMaster || t.companyId === companyId));
   if (!ticket) {
@@ -10662,6 +10809,16 @@ apiRouter.patch('/fulfillment/reversa/:id/triagem', authenticate, checkSubscript
     ticket
   });
 });
+
+// Mount Adega & Tabacaria Phases 1-4 Evolution Routes
+apiRouter.use(
+  '/commerce',
+  createCommerceEvolutionRouter({
+    authenticate,
+    checkSubscription,
+    getEffectiveCompanyId,
+  })
+);
 
 // Sanitized API error handler (prevents unhandled async rejections or internal SQL leaks)
 apiRouter.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

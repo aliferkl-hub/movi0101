@@ -33,6 +33,18 @@ import {
   CommercialTerminal,
   CommercialTerminalTransaction,
   TerminalReconciliationReport,
+  CommercialAlert,
+  SmartStockItem,
+  CommercialReplenishment,
+  CommercialLoss,
+  CommercialLossReason,
+  CommercialInventory,
+  CommercialPeriodClosing,
+  CommercialOrder,
+  CommercialOrderStatus,
+  CommercialCustomer,
+  CommercialImportBatch,
+  CommercialPilotConfig,
   PreventionAlert,
   PreventionMetrics,
   WarehouseCD,
@@ -1078,6 +1090,390 @@ export const api = {
   ) =>
     request<{ success: boolean; message: string; ticket: ReverseLogisticsTicket }>(`/api/fulfillment/reversa/${id}/triagem`, {
       method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  // ============================================================================
+  // ADEGA & TABACARIA — EVOLUÇÃO COMPLETA (4 FASES)
+  // ============================================================================
+
+  // FASE 1: Radar MoviLog, Estoque Inteligente, Reposição & Alertas
+  getCommerceRadar: (modulo?: 'adega' | 'tabacaria') =>
+    request<{
+      success: boolean;
+      resumo: {
+        totalProdutosAtivos: number;
+        alertasAtivosCount: number;
+        alertasCriticosCount: number;
+        alertasResolvidosCount: number;
+        itensEmRupturaCount: number;
+        itensCriticosCount: number;
+        itensEmAtencaoCount: number;
+        itensParadosCount: number;
+        reposicoesPendentesCount: number;
+        pedidosEmAndamentoCount: number;
+        totalCapitalCusto: number;
+        capitalParadoCusto: number;
+      };
+      alertasPrioritarios: CommercialAlert[];
+      itensRiscoRuptura: SmartStockItem[];
+      itensParados: SmartStockItem[];
+      recomendacoes: {
+        id: string;
+        prioridade: 'critica' | 'alta' | 'media';
+        titulo: string;
+        justificativa: string;
+        rotaSugerida: string;
+        acaoLabel: string;
+      }[];
+    }>(modulo ? `/api/commerce/radar?modulo=${modulo}` : '/api/commerce/radar'),
+
+  getCommerceSmartStock: (params?: { modulo?: 'adega' | 'tabacaria'; status?: string; search?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.modulo) q.set('modulo', params.modulo);
+    if (params?.status) q.set('status', params.status);
+    if (params?.search) q.set('search', params.search);
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return request<{ success: boolean; items: SmartStockItem[]; total: number }>(`/api/commerce/smart-stock${qs}`);
+  },
+
+  getCommerceReplenishments: (params?: { modulo?: 'adega' | 'tabacaria'; status?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.modulo) q.set('modulo', params.modulo);
+    if (params?.status) q.set('status', params.status);
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return request<{ success: boolean; replenishments: CommercialReplenishment[]; total: number }>(`/api/commerce/replenishments${qs}`);
+  },
+
+  reviewCommerceReplenishment: (
+    id: string,
+    data: {
+      acao: 'aprovar' | 'descartar';
+      quantidadeAprovada?: number;
+      fornecedorId?: string;
+      gerarPedidoCompra?: boolean;
+      observacoes?: string;
+    }
+  ) =>
+    request<{
+      success: boolean;
+      message: string;
+      replenishment: CommercialReplenishment;
+      purchase?: CommercialPurchase | null;
+    }>(`/api/commerce/replenishments/${id}/review`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  getCommerceAlerts: (params?: { modulo?: 'adega' | 'tabacaria'; status?: string; prioridade?: string; categoria?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.modulo) q.set('modulo', params.modulo);
+    if (params?.status) q.set('status', params.status);
+    if (params?.prioridade) q.set('prioridade', params.prioridade);
+    if (params?.categoria) q.set('categoria', params.categoria);
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return request<{ success: boolean; alerts: CommercialAlert[]; total: number }>(`/api/commerce/alerts${qs}`);
+  },
+
+  resolveCommerceAlert: (id: string, motivoResolucao?: string) =>
+    request<{ success: boolean; message: string; alert: CommercialAlert }>(`/api/commerce/alerts/${id}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ motivoResolucao }),
+    }),
+
+  // FASE 2: Rentabilidade, Produtos Histórico, Fornecedores, Compras Status, Perdas, Inventário & Fechamento
+  getCommerceProfitability: (params?: { modulo?: 'adega' | 'tabacaria'; dataInicio?: string; dataFim?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.modulo) q.set('modulo', params.modulo);
+    if (params?.dataInicio) q.set('dataInicio', params.dataInicio);
+    if (params?.dataFim) q.set('dataFim', params.dataFim);
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return request<{ success: boolean; metrics: any }>(`/api/commerce/profitability${qs}`);
+  },
+
+  getCommerceProductHistory: (id: string) =>
+    request<{
+      success: boolean;
+      product: CommercialProduct;
+      financeiro: { lucroUnitario: number; margemVendaPercentual: number; markupPercentual: number };
+      custoHistorico: any[];
+      movements: CommercialStockMovement[];
+      purchases: any[];
+    }>(`/api/commerce/products/${id}/history`),
+
+  updateCommerceSupplier: (id: string, data: Partial<CommercialSupplier>) =>
+    request<{ success: boolean; message: string; supplier: CommercialSupplier }>(`/api/commerce/suppliers/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  getCommerceSupplierHistory: (id: string) =>
+    request<{
+      success: boolean;
+      supplier: CommercialSupplier;
+      purchases: CommercialPurchase[];
+      totalCompras: number;
+      totalComprado: number;
+    }>(`/api/commerce/suppliers/${id}/history`),
+
+  updateCommercePurchaseStatus: (id: string, data: { status: string; numeroNota?: string; observacoes?: string }) =>
+    request<{ success: boolean; message: string; purchase: CommercialPurchase }>(`/api/commerce/purchases/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  getCommerceLosses: (params?: { modulo?: 'adega' | 'tabacaria'; tipo?: string; dataInicio?: string; dataFim?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.modulo) q.set('modulo', params.modulo);
+    if (params?.tipo) q.set('tipo', params.tipo);
+    if (params?.dataInicio) q.set('dataInicio', params.dataInicio);
+    if (params?.dataFim) q.set('dataFim', params.dataFim);
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return request<{
+      success: boolean;
+      losses: CommercialLoss[];
+      totalQtd: number;
+      totalImpactoFinanceiro: number;
+    }>(`/api/commerce/losses${qs}`);
+  },
+
+  createCommerceLoss: (data: {
+    productId: string;
+    tipo: CommercialLossReason;
+    quantidade: number;
+    motivo: string;
+    dataPerda?: string;
+  }) =>
+    request<{ success: boolean; message: string; loss: CommercialLoss; product: CommercialProduct }>('/api/commerce/losses', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  getCommerceInventories: () =>
+    request<{ success: boolean; inventories: CommercialInventory[] }>('/api/commerce/inventories'),
+
+  createCommerceInventory: (data: { modulo: 'adega' | 'tabacaria' | 'ambos'; observacoes?: string }) =>
+    request<{ success: boolean; message: string; inventory: CommercialInventory }>('/api/commerce/inventories', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  saveCommerceInventoryCount: (
+    id: string,
+    data: { counts: { productId: string; saldoContado: number | null; justificativa?: string }[]; finalizarConferencia?: boolean }
+  ) =>
+    request<{ success: boolean; message: string; inventory: CommercialInventory }>(`/api/commerce/inventories/${id}/count`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  approveCommerceInventory: (id: string, observacoes?: string) =>
+    request<{ success: boolean; message: string; inventory: CommercialInventory }>(`/api/commerce/inventories/${id}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ observacoes }),
+    }),
+
+  getCommerceClosings: () =>
+    request<{ success: boolean; closings: CommercialPeriodClosing[] }>('/api/commerce/closings'),
+
+  createCommerceClosing: (data: { modulo: 'adega' | 'tabacaria' | 'ambos'; dataInicio: string; dataFim: string; observacoes?: string }) =>
+    request<{ success: boolean; message: string; closing: CommercialPeriodClosing }>('/api/commerce/closings', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  // FASE 3: Pedidos, Entregas, Clientes (LGPD) & Catálogo Digital
+  getCommerceOrders: (params?: { status?: string; modulo?: string; tipoAtendimento?: string; search?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set('status', params.status);
+    if (params?.modulo) q.set('modulo', params.modulo);
+    if (params?.tipoAtendimento) q.set('tipoAtendimento', params.tipoAtendimento);
+    if (params?.search) q.set('search', params.search);
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return request<{ success: boolean; orders: CommercialOrder[]; total: number }>(`/api/commerce/orders${qs}`);
+  },
+
+  createCommerceOrder: (data: any) =>
+    request<{ success: boolean; message: string; order: CommercialOrder }>('/api/commerce/orders', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateCommerceOrderStatus: (
+    id: string,
+    data: {
+      status: CommercialOrderStatus;
+      observacao?: string;
+      entregadorId?: string;
+      entregadorNome?: string;
+      entregadorTelefone?: string;
+      verificacaoMaioridadeEntrega?: boolean;
+      motivoCancelamento?: string;
+    }
+  ) =>
+    request<{ success: boolean; message: string; order: CommercialOrder }>(`/api/commerce/orders/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  addCommerceOrderOccurrence: (id: string, descricao: string) =>
+    request<{ success: boolean; message: string; order: CommercialOrder }>(`/api/commerce/orders/${id}/occurrences`, {
+      method: 'POST',
+      body: JSON.stringify({ descricao }),
+    }),
+
+  getCommerceCustomers: (search?: string) =>
+    request<{ success: boolean; customers: (CommercialCustomer & { totalPedidos?: number; ultimoPedidoEm?: string | null })[] }>(
+      search ? `/api/commerce/customers?search=${encodeURIComponent(search)}` : '/api/commerce/customers'
+    ),
+
+  createCommerceCustomer: (data: Partial<CommercialCustomer>) =>
+    request<{ success: boolean; message: string; customer: CommercialCustomer }>('/api/commerce/customers', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateCommerceCustomer: (id: string, data: Partial<CommercialCustomer>) =>
+    request<{ success: boolean; message: string; customer: CommercialCustomer }>(`/api/commerce/customers/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  anonymizeCommerceCustomer: (id: string) =>
+    request<{ success: boolean; message: string; customer: CommercialCustomer }>(`/api/commerce/customers/${id}/anonymize`, {
+      method: 'POST',
+    }),
+
+  getCommerceCatalogPreview: () =>
+    request<{
+      success: boolean;
+      companyId: string;
+      catalogoPublicoAtivo: boolean;
+      catalogoTitulo?: string;
+      whatsappPedidos?: string;
+      publicPath: string;
+      items: any[];
+      blockedRestrictedCount: number;
+    }>('/api/commerce/catalog'),
+
+  getPublicCommerceCatalog: (companyId: string, params?: { modulo?: string; categoria?: string; search?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.modulo) q.set('modulo', params.modulo);
+    if (params?.categoria) q.set('categoria', params.categoria);
+    if (params?.search) q.set('search', params.search);
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return request<{
+      success: boolean;
+      store: { companyId: string; nome: string; titulo: string; whatsapp: string | null; avisoLegal: string };
+      categories: string[];
+      items: any[];
+      total: number;
+    }>(`/api/commerce/catalog/public/${encodeURIComponent(companyId)}${qs}`);
+  },
+
+  // FASE 4: Implantação, Modo Espelho 7 dias, Importação CSV/XLSX, Avaliação & Migração
+  getCommercePilot: () =>
+    request<{
+      success: boolean;
+      pilot: CommercialPilotConfig;
+      diasRestantesEspelho: number | null;
+      progressoChecklistPercentual: number;
+      estatisticasEspelho: {
+        produtosImportadosEspelho: number;
+        produtosCadastradosMovilog: number;
+        fornecedoresImportadosEspelho: number;
+        fornecedoresMovilog: number;
+        vendasRegistradasMovilog: number;
+        pedidosRegistradosMovilog: number;
+        lotesImportacao: number;
+      };
+    }>('/api/commerce/pilot'),
+
+  updateCommercePilot: (data: any) =>
+    request<{ success: boolean; message: string; pilot: CommercialPilotConfig }>('/api/commerce/pilot', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  toggleCommerceMirrorMode: (data: { action: 'start' | 'pause' | 'resume'; sistemaAnteriorNome?: string; observacoes?: string }) =>
+    request<{ success: boolean; message: string; pilot: CommercialPilotConfig }>('/api/commerce/pilot/mirror-mode', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  parseCommerceImport: (data: { fileName: string; contentBase64?: string; csvText?: string; tipoAlvo: 'produtos' | 'fornecedores' }) =>
+    request<{
+      success: boolean;
+      formato: 'csv' | 'xlsx';
+      headers: string[];
+      suggestedMapping: Record<string, string>;
+      totalLinhas: number;
+      rows: Record<string, string>[];
+      existingKeys: { skusCount: number; barcodesCount: number; cnpjsCount: number };
+    }>('/api/commerce/imports/parse', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  commitCommerceImport: (data: {
+    fileName: string;
+    formato: 'csv' | 'xlsx';
+    tipoAlvo: 'produtos' | 'fornecedores';
+    modulo: 'adega' | 'tabacaria';
+    modoEspelho: boolean;
+    mapeamentoColunas: Record<string, string>;
+    rows: Record<string, any>[];
+  }) =>
+    request<{ success: boolean; message: string; batch: CommercialImportBatch }>('/api/commerce/imports/commit', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  getCommerceImportHistory: () =>
+    request<{ success: boolean; batches: CommercialImportBatch[] }>('/api/commerce/imports/history'),
+
+  getCommercePilotEvaluation: () =>
+    request<{
+      success: boolean;
+      pilot: CommercialPilotConfig;
+      metricasReais: {
+        produtosTotais: number;
+        produtosImportadosEspelho: number;
+        vendasPdvQtd: number;
+        faturamentoPdvValor: number;
+        pedidosQtd: number;
+        pedidosEntreguesQtd: number;
+        perdasRegistradasQtd: number;
+        perdasValor: number;
+        inventariosQtd: number;
+        alertasResolvidosQtd: number;
+        clientesAtivosQtd: number;
+        importacoesRealizadasQtd: number;
+        recursosUtilizadosCount: number;
+        recursosTotaisCount: number;
+      };
+      recursosAvaliados: { recurso: string; utilizado: boolean; registros: number }[];
+      notaAvaliacao: string;
+    }>('/api/commerce/pilot/evaluation'),
+
+  executeCommerceMigrationAction: (data: {
+    action: 'check_conflicts' | 'start' | 'complete_step' | 'pause' | 'resume' | 'complete';
+    etapa?: string;
+    observacao?: string;
+  }) =>
+    request<{
+      success: boolean;
+      message: string;
+      pilot: CommercialPilotConfig;
+      checklistResumo: {
+        produtosTotal: number;
+        fornecedoresTotal: number;
+        duplicateSkuCount: number;
+        missingPriceCount: number;
+        conflicts: number;
+      };
+    }>('/api/commerce/migration/action', {
+      method: 'POST',
       body: JSON.stringify(data),
     }),
 };

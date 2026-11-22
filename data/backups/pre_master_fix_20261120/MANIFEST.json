@@ -1,0 +1,43 @@
+{
+  "createdAt": "2026-11-21T03:24:45.609Z",
+  "purpose": "Verifiable pre-fix backup for MoviLog Master Owner auth/persistence fixes",
+  "files": {
+    "db.json": {
+      "bytes": 862741,
+      "sha256": "d2dcf2ce464e505f3df9d6ee9134f4e1c50041b1ef49015747495c4b81cf4ec4"
+    },
+    "sessions.json": {
+      "bytes": 19225,
+      "sha256": "c1a027d958040bd4cdf1c079ff324141fabd86905bf5fff62a7b35129f90adf7"
+    }
+  },
+  "counts": {
+    "users": 80,
+    "companies": 24,
+    "auditLogs": 597,
+    "sessions": 119,
+    "masterOwners": [
+      {
+        "id": "312f0489-d5ba-4a34-b493-4ffe7318cf2e",
+        "email": "Alifermadeiro@hotmail.com",
+        "active": true,
+        "mustSetPassword": false,
+        "hasPasswordHash": true
+      },
+      {
+        "id": "master_alifergael76_gmail",
+        "email": "alifergael76@gmail.com",
+        "active": true,
+        "mustSetPassword": false,
+        "hasPasswordHash": true
+      },
+      {
+        "id": "75ef29c2-3d19-4e70-9cd3-8a35a458665d",
+        "email": "aliferkl@icloud.com",
+        "active": true,
+        "mustSetPassword": true,
+        "hasPasswordHash": false
+      }
+    ]
+  }
+}

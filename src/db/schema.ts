@@ -559,6 +559,138 @@ export const commercialTerminalTransactions = pgTable(
   ]
 );
 
+export const commercialAlerts = pgTable(
+  'commercial_alerts',
+  {
+    id: text('id').primaryKey(),
+    companyId: text('company_id')
+      .notNull()
+      .references(() => companies.id, { onDelete: 'restrict' }),
+    alertKey: text('alert_key').notNull(),
+    status: text('status').notNull(),
+    prioridade: text('prioridade').notNull(),
+    criadoEm: text('criado_em').notNull(),
+    payload: jsonb('payload').$type<Record<string, any>>().notNull(),
+  },
+  (table) => [index('commercial_alerts_company_idx').on(table.companyId, table.status)]
+);
+
+export const commercialReplenishments = pgTable(
+  'commercial_replenishments',
+  {
+    id: text('id').primaryKey(),
+    companyId: text('company_id')
+      .notNull()
+      .references(() => companies.id, { onDelete: 'restrict' }),
+    productId: text('product_id').notNull(),
+    status: text('status').notNull(),
+    criadoEm: text('criado_em').notNull(),
+    payload: jsonb('payload').$type<Record<string, any>>().notNull(),
+  },
+  (table) => [index('commercial_replenishments_company_idx').on(table.companyId, table.status)]
+);
+
+export const commercialLosses = pgTable(
+  'commercial_losses',
+  {
+    id: text('id').primaryKey(),
+    companyId: text('company_id')
+      .notNull()
+      .references(() => companies.id, { onDelete: 'restrict' }),
+    productId: text('product_id').notNull(),
+    tipo: text('tipo').notNull(),
+    dataPerda: text('data_perda').notNull(),
+    payload: jsonb('payload').$type<Record<string, any>>().notNull(),
+  },
+  (table) => [index('commercial_losses_company_idx').on(table.companyId, table.dataPerda)]
+);
+
+export const commercialInventories = pgTable(
+  'commercial_inventories',
+  {
+    id: text('id').primaryKey(),
+    companyId: text('company_id')
+      .notNull()
+      .references(() => companies.id, { onDelete: 'restrict' }),
+    codigo: text('codigo').notNull(),
+    status: text('status').notNull(),
+    dataInicio: text('data_inicio').notNull(),
+    payload: jsonb('payload').$type<Record<string, any>>().notNull(),
+  },
+  (table) => [index('commercial_inventories_company_idx').on(table.companyId)]
+);
+
+export const commercialPeriodClosings = pgTable(
+  'commercial_period_closings',
+  {
+    id: text('id').primaryKey(),
+    companyId: text('company_id')
+      .notNull()
+      .references(() => companies.id, { onDelete: 'restrict' }),
+    codigo: text('codigo').notNull(),
+    dataInicio: text('data_inicio').notNull(),
+    dataFim: text('data_fim').notNull(),
+    payload: jsonb('payload').$type<Record<string, any>>().notNull(),
+  },
+  (table) => [index('commercial_period_closings_company_idx').on(table.companyId)]
+);
+
+export const commercialOrders = pgTable(
+  'commercial_orders',
+  {
+    id: text('id').primaryKey(),
+    companyId: text('company_id')
+      .notNull()
+      .references(() => companies.id, { onDelete: 'restrict' }),
+    codigoPedido: text('codigo_pedido').notNull(),
+    status: text('status').notNull(),
+    criadoEm: text('criado_em').notNull(),
+    payload: jsonb('payload').$type<Record<string, any>>().notNull(),
+  },
+  (table) => [index('commercial_orders_company_idx').on(table.companyId, table.status)]
+);
+
+export const commercialCustomers = pgTable(
+  'commercial_customers',
+  {
+    id: text('id').primaryKey(),
+    companyId: text('company_id')
+      .notNull()
+      .references(() => companies.id, { onDelete: 'restrict' }),
+    nome: text('nome').notNull(),
+    ativo: boolean('ativo').notNull().default(true),
+    payload: jsonb('payload').$type<Record<string, any>>().notNull(),
+  },
+  (table) => [index('commercial_customers_company_idx').on(table.companyId)]
+);
+
+export const commercialImportBatches = pgTable(
+  'commercial_import_batches',
+  {
+    id: text('id').primaryKey(),
+    companyId: text('company_id')
+      .notNull()
+      .references(() => companies.id, { onDelete: 'restrict' }),
+    tipoAlvo: text('tipo_alvo').notNull(),
+    criadoEm: text('criado_em').notNull(),
+    payload: jsonb('payload').$type<Record<string, any>>().notNull(),
+  },
+  (table) => [index('commercial_import_batches_company_idx').on(table.companyId)]
+);
+
+export const commercialPilotConfigs = pgTable(
+  'commercial_pilot_configs',
+  {
+    id: text('id').primaryKey(),
+    companyId: text('company_id')
+      .notNull()
+      .references(() => companies.id, { onDelete: 'restrict' }),
+    atualizadoEm: text('atualizado_em').notNull(),
+    payload: jsonb('payload').$type<Record<string, any>>().notNull(),
+  },
+  (table) => [index('commercial_pilot_configs_company_idx').on(table.companyId)]
+);
+
 // ============================================================================
 // 5. PREVENTION, ENTERPRISE WAREHOUSES, FULFILLMENT & CONTROL TOWER TABLES
 // ============================================================================

@@ -1,0 +1,59 @@
+{
+  "createdAt": "2026-11-21T03:47:47.971Z",
+  "purpose": "Pre-remediation verifiable backup before MASTER OWNER SINGLETON + LOGIN STABILITY GUARD",
+  "files": {
+    "db.json": {
+      "bytes": 862741,
+      "sha256": "d2dcf2ce464e505f3df9d6ee9134f4e1c50041b1ef49015747495c4b81cf4ec4"
+    },
+    "sessions.json": {
+      "bytes": 19225,
+      "sha256": "c1a027d958040bd4cdf1c079ff324141fabd86905bf5fff62a7b35129f90adf7"
+    }
+  },
+  "counts": {
+    "users": 80,
+    "companies": 24,
+    "sessions": 119,
+    "auditLogs": 597
+  },
+  "systemConfigMaster": {
+    "masterEmail": "Alifermadeiro@hotmail.com",
+    "masterInitialized": true
+  },
+  "masterOwnerRecordsBefore": [
+    {
+      "id": "312f0489-d5ba-4a34-b493-4ffe7318cf2e",
+      "email": "Alifermadeiro@hotmail.com",
+      "name": "Alifer Madeiro",
+      "role": "master_owner",
+      "active": true,
+      "companyId": null,
+      "mustSetPassword": null,
+      "passwordHashSha256_12": "c0a3ee1bc59b",
+      "saltSha256_12": "346cfe07d775"
+    },
+    {
+      "id": "master_alifergael76_gmail",
+      "email": "alifergael76@gmail.com",
+      "name": "Alifer Madeiro (Master)",
+      "role": "master_owner",
+      "active": true,
+      "companyId": null,
+      "mustSetPassword": null,
+      "passwordHashSha256_12": "c0a3ee1bc59b",
+      "saltSha256_12": "346cfe07d775"
+    },
+    {
+      "id": "75ef29c2-3d19-4e70-9cd3-8a35a458665d",
+      "email": "aliferkl@icloud.com",
+      "name": "Alifer Madeiro",
+      "role": "master_owner",
+      "active": true,
+      "companyId": null,
+      "mustSetPassword": true,
+      "passwordHashSha256_12": "",
+      "saltSha256_12": ""
+    }
+  ]
+}

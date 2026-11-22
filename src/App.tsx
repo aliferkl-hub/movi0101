@@ -44,6 +44,7 @@ import { PreventionCenterView } from './components/prevention/PreventionCenterVi
 import { EnterprisePhaseHubView } from './components/enterprise/EnterprisePhaseHubView';
 import { WarehouseManagerView } from './components/warehouse/WarehouseManagerView';
 import { FulfillmentPipelineView } from './components/fulfillment/FulfillmentPipelineView';
+import { PublicCatalogPage } from './components/commerce/phase3/PublicCatalogPage';
 
 import { Loader2, ShieldCheck } from 'lucide-react';
 
@@ -137,6 +138,11 @@ const DashboardContent: React.FC = () => {
       else if (targetModule === 'master') setActiveView(isMaster ? 'master_dashboard' : 'settings');
     }
   };
+
+  const publicCatalogMatch = window.location.pathname.match(/^\/catalogo\/([^/]+)\/?$/i);
+  if (publicCatalogMatch && publicCatalogMatch[1]) {
+    return <PublicCatalogPage companyId={decodeURIComponent(publicCatalogMatch[1])} />;
+  }
 
   if (isLoading) {
     return (

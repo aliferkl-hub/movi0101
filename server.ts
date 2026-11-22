@@ -13,6 +13,8 @@ const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
+  // Trust only local/internal reverse proxy hops (loopback, Cloud Run internal proxies); never trust arbitrary public IPs
+  app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
   const httpServer = http.createServer(app);
   const PORT = Number(process.env.PORT) || 3000;
 

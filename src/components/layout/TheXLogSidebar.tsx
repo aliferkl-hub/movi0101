@@ -398,6 +398,9 @@ export const TheXLogSidebar: React.FC<TheXLogSidebarProps> = ({
     if (m === 'logistica' && currentModule === 'logistica' && v === activeView) return true;
     if (m === 'predial' && currentModule === 'predial' && v === activeView) return true;
     if (m === 'routing' && currentModule === 'routing' && v === activeView) return true;
+    if (v === 'terminals') return (currentModule === 'adega' || currentModule === 'tabacaria') && activeView === 'terminals';
+    if (m === 'adega') return currentModule === 'adega' && activeView !== 'terminals';
+    if (m === 'tabacaria') return currentModule === 'tabacaria' && activeView !== 'terminals';
     return false;
   };
 

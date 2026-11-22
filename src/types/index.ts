@@ -574,6 +574,14 @@ export interface NotificationItem {
 // Adega & Tabacaria Commercial Models
 // ==========================================
 
+export interface CommercialProductCostEntry {
+  custo: number;
+  data: string;
+  fornecedorId?: string;
+  fornecedorNome?: string;
+  motivo?: string;
+}
+
 export interface CommercialProduct {
   id: string;
   companyId: string;
@@ -588,12 +596,16 @@ export interface CommercialProduct {
   fornecedorId?: string;
   fornecedorNome?: string;
   precoCusto: number;
+  custoAnterior?: number;
+  custoHistorico?: CommercialProductCostEntry[];
   precoVenda: number;
   estoqueAtual: number;
   estoqueMinimo: number;
+  estoqueMaximo?: number;
   unidade: string;
   fotoUrl?: string;
   idadeMinima: number;
+  origemRegistro?: 'manual' | 'importado_espelho' | 'migrado' | 'exemplo';
   ativo: boolean;
   criadoEm: string;
   atualizadoEm: string;
@@ -609,10 +621,12 @@ export interface CommercialStockMovement {
   quantidade: number;
   quantidadeAnterior: number;
   quantidadeNova: number;
+  custoUnitarioNoMovimento?: number;
   motivo: string;
   usuarioId: string;
   usuarioNome: string;
   referenciaId?: string;
+  origemRegistro?: 'manual' | 'importado_espelho' | 'migrado' | 'sistema';
   criadoEm: string;
 }
 
@@ -747,9 +761,13 @@ export interface CommercialSupplier {
   email: string;
   endereco?: string;
   segmento: 'adega' | 'tabacaria' | 'ambos';
+  prazoEntregaDias?: number;
+  condicaoPagamento?: string;
   observacoes?: string;
+  origemRegistro?: 'manual' | 'importado_espelho' | 'migrado';
   ativo: boolean;
   criadoEm: string;
+  atualizadoEm?: string;
 }
 
 export interface CommercialPurchaseItem {
@@ -765,15 +783,324 @@ export interface CommercialPurchase {
   companyId: string;
   fornecedorId: string;
   fornecedorNome: string;
+  modulo?: 'adega' | 'tabacaria' | 'ambos';
   numeroNota?: string;
   dataCompra: string;
   dataRecebimento?: string;
-  status: 'pendente' | 'recebido' | 'cancelado';
+  status: 'rascunho' | 'aprovada' | 'pendente' | 'recebido' | 'cancelado';
+  sugestaoReposicaoId?: string;
   itens: CommercialPurchaseItem[];
   valorTotal: number;
   formaPagamento?: string;
   observacoes?: string;
   criadoEm: string;
+}
+
+// ==========================================
+// ADEGA & TABACARIA — 4 FASES DE EVOLUÇÃO
+// ==========================================
+
+export type CommercialAlertPriority = 'baixa' | 'media' | 'alta' | 'critica';
+export type CommercialAlertCategory =
+  | 'ruptura_estoque'
+  | 'estoque_baixo'
+  | 'produto_parado'
+  | 'divergencia_estoque'
+  | 'alta_custo_fornecedor'
+  | 'pedido_pendente'
+  | 'entrega_pendente'
+  | 'perda_recorrente';
+
+export interface CommercialAlert {
+  id: string;
+  companyId: string;
+  alertKey: string;
+  modulo: 'adega' | 'tabacaria' | 'ambos';
+  categoria: CommercialAlertCategory;
+  prioridade: CommercialAlertPriority;
+  titulo: string;
+  descricao: string;
+  acaoRecomendada: string;
+  rotaSugerida: string;
+  referenciaTipo: 'product' | 'order' | 'purchase' | 'inventory' | 'loss';
+  referenciaId: string;
+  status: 'ativo' | 'resolvido';
+  resolvidoEm?: string;
+  resolvidoPorId?: string;
+  resolvidoPorNome?: string;
+  motivoResolucao?: string;
+  criadoEm: string;
+}
+
+export interface SmartStockItem {
+  product: CommercialProduct;
+  consumoMedioDiario: number | null;
+  historicoSuficiente: boolean;
+  motivoHistorico: string;
+  diasCoberturaEstimada: number | null;
+  diasSemMovimentacao: number | null;
+  estoqueMaximoConfigurado: number;
+  statusEstoque: 'ruptura' | 'critico' | 'atencao' | 'saudavel' | 'parado' | 'excesso';
+  sugestaoReposicaoQtd: number;
+}
+
+export interface CommercialReplenishment {
+  id: string;
+  companyId: string;
+  modulo: 'adega' | 'tabacaria';
+  productId: string;
+  productNome: string;
+  sku: string;
+  estoqueAtual: number;
+  estoqueMinimo: number;
+  estoqueMaximo: number;
+  consumoMedioDiario: number | null;
+  coberturaDiasEstimada: number | null;
+  quantidadeSugerida: number;
+  quantidadeAprovada?: number;
+  custoUnitarioEstimado: number;
+  custoTotalEstimado: number;
+  justificativa: string;
+  fornecedorId?: string;
+  fornecedorNome?: string;
+  status: 'pendente' | 'aprovada' | 'pedido_gerado' | 'descartada';
+  purchaseId?: string;
+  revisadoPorId?: string;
+  revisadoPorNome?: string;
+  revisadoEm?: string;
+  observacoes?: string;
+  criadoEm: string;
+}
+
+export type CommercialLossReason = 'avaria' | 'vencimento' | 'consumo_interno' | 'descarte' | 'extravio';
+
+export interface CommercialLoss {
+  id: string;
+  companyId: string;
+  modulo: 'adega' | 'tabacaria';
+  productId: string;
+  productNome: string;
+  sku: string;
+  tipo: CommercialLossReason;
+  quantidade: number;
+  custoUnitario: number;
+  custoTotalImpacto: number;
+  motivo: string;
+  dataPerda: string;
+  responsavelId: string;
+  responsavelNome: string;
+  criadoEm: string;
+}
+
+export interface CommercialInventoryItem {
+  productId: string;
+  sku: string;
+  nome: string;
+  modulo: 'adega' | 'tabacaria';
+  unidade: string;
+  saldoSistema: number;
+  saldoContado: number | null;
+  divergencia: number;
+  custoUnitario: number;
+  impactoFinanceiro: number;
+  justificativa?: string;
+}
+
+export interface CommercialInventory {
+  id: string;
+  companyId: string;
+  codigo: string;
+  modulo: 'adega' | 'tabacaria' | 'ambos';
+  status: 'em_contagem' | 'conferido' | 'aprovado_ajustado' | 'cancelado';
+  itens: CommercialInventoryItem[];
+  totalItens: number;
+  totalDivergencias: number;
+  impactoFinanceiroTotal: number;
+  responsavelId: string;
+  responsavelNome: string;
+  aprovadoPorId?: string;
+  aprovadoPorNome?: string;
+  dataInicio: string;
+  dataConclusao?: string;
+  observacoes?: string;
+}
+
+export interface CommercialPeriodClosing {
+  id: string;
+  companyId: string;
+  codigo: string;
+  modulo: 'adega' | 'tabacaria' | 'ambos';
+  dataInicio: string;
+  dataFim: string;
+  entradasQtd: number;
+  saidasQtd: number;
+  vendasQtd: number;
+  vendasValor: number;
+  custoProdutosVendidos: number;
+  lucroBrutoEstimado: number;
+  margemBrutaPercentual: number;
+  comprasQtd: number;
+  comprasValor: number;
+  perdasQtd: number;
+  perdasValor: number;
+  despesasOperacionaisRegistradas: number | null;
+  lucroLiquidoObservado: number | null;
+  notaLucroLiquido: string;
+  observacoes?: string;
+  fechadoPorId: string;
+  fechadoPorNome: string;
+  criadoEm: string;
+}
+
+export type CommercialOrderStatus = 'recebido' | 'em_separacao' | 'saiu_entrega' | 'entregue' | 'cancelado';
+
+export interface CommercialOrderItem {
+  productId: string;
+  sku: string;
+  nome: string;
+  quantidade: number;
+  precoUnitario: number;
+  precoCusto: number;
+  total: number;
+  itemRestrito: boolean;
+}
+
+export interface CommercialOrder {
+  id: string;
+  companyId: string;
+  codigoPedido: string;
+  modulo: 'adega' | 'tabacaria' | 'misto';
+  customerId?: string;
+  clienteNome: string;
+  clienteTelefone?: string;
+  enderecoEntrega?: string;
+  bairro?: string;
+  cidade?: string;
+  tipoAtendimento: 'entrega' | 'retirada_balcao';
+  itens: CommercialOrderItem[];
+  valorItens: number;
+  taxaEntrega: number;
+  desconto: number;
+  valorTotal: number;
+  custoTotalEstimado: number;
+  formaPagamento: 'dinheiro' | 'pix' | 'cartao_credito' | 'cartao_debito' | 'pagamento_entrega';
+  contemItemRestrito: boolean;
+  verificacaoMaioridadeSolicitada: boolean;
+  verificacaoMaioridadeEntrega?: boolean;
+  status: CommercialOrderStatus;
+  entregadorId?: string;
+  entregadorNome?: string;
+  entregadorTelefone?: string;
+  ocorrencias: {
+    id: string;
+    dataHora: string;
+    descricao: string;
+    autorNome: string;
+  }[];
+  historicoStatus: {
+    status: CommercialOrderStatus;
+    dataHora: string;
+    autorId: string;
+    autorNome: string;
+    observacao?: string;
+  }[];
+  iniciadoEm: string;
+  entregueEm?: string;
+  duracaoOperacaoMinutos?: number;
+  canceladoEm?: string;
+  motivoCancelamento?: string;
+  saleId?: string;
+  observacoes?: string;
+  criadoPorId: string;
+  criadoPorNome: string;
+  criadoEm: string;
+  atualizadoEm: string;
+}
+
+export interface CommercialCustomer {
+  id: string;
+  companyId: string;
+  nome: string;
+  telefone?: string;
+  email?: string;
+  documento?: string;
+  endereco?: string;
+  bairro?: string;
+  cidade?: string;
+  observacoes?: string;
+  maioridadeVerificada: boolean;
+  consentimentoLgpd: boolean;
+  consentimentoLgpdEm?: string;
+  anonimizado: boolean;
+  anonimizadoEm?: string;
+  ativo: boolean;
+  criadoEm: string;
+  atualizadoEm: string;
+}
+
+export interface CommercialImportBatch {
+  id: string;
+  companyId: string;
+  arquivoNome: string;
+  formato: 'csv' | 'xlsx';
+  tipoAlvo: 'produtos' | 'fornecedores';
+  modulo: 'adega' | 'tabacaria';
+  modoEspelho: boolean;
+  totalLinhas: number;
+  importadosQtd: number;
+  ignoradosDuplicadosQtd: number;
+  errosQtd: number;
+  mapeamentoColunas: Record<string, string>;
+  errosDetalhes: { linha: number; erro: string }[];
+  usuarioId: string;
+  usuarioNome: string;
+  criadoEm: string;
+}
+
+export interface CommercialPilotConfig {
+  id: string;
+  companyId: string;
+  estabelecimentoNome: string;
+  estabelecimentoCnpj?: string;
+  estabelecimentoEndereco?: string;
+  whatsappPedidos?: string;
+  catalogoPublicoAtivo: boolean;
+  catalogoTitulo?: string;
+  checklistPassos: Record<
+    string,
+    {
+      concluido: boolean;
+      concluidoEm?: string;
+      concluidoPorNome?: string;
+    }
+  >;
+  modoEspelho: {
+    ativo: boolean;
+    iniciadoEm?: string;
+    expiraEm?: string;
+    pausadoEm?: string;
+    sistemaAnteriorNome?: string;
+    observacoes?: string;
+  };
+  migracao: {
+    status: 'nao_iniciada' | 'em_preparacao' | 'validada' | 'em_execucao' | 'pausada' | 'concluida';
+    etapaAtual: string;
+    etapasConcluidas: string[];
+    conflitosDetectados: number;
+    ultimoCheckEm?: string;
+    iniciadoEm?: string;
+    concluidoEm?: string;
+    pausadoEm?: string;
+    historicoLogs: {
+      id: string;
+      dataHora: string;
+      etapa: string;
+      status: string;
+      detalhes: string;
+      autorNome: string;
+    }[];
+  };
+  atualizadoEm: string;
 }
 
 export interface CommercialDashboardMetrics {

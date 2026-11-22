@@ -16,7 +16,8 @@ import {
   Layers,
   ArrowUpDown,
   X,
-  ShieldAlert
+  ShieldAlert,
+  History
 } from 'lucide-react';
 
 interface CommerceProductsViewProps {
@@ -63,6 +64,15 @@ export const CommerceProductsView: React.FC<CommerceProductsViewProps> = ({ modu
   const [seeding, setSeeding] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; nome: string } | null>(null);
+  const [historyData, setHistoryData] = useState<{
+    product: CommercialProduct;
+    financeiro: { lucroUnitario: number; margemVendaPercentual: number; markupPercentual: number };
+    custoHistorico: any[];
+    movements: any[];
+    purchases: any[];
+  } | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -77,6 +87,7 @@ export const CommerceProductsView: React.FC<CommerceProductsViewProps> = ({ modu
     precoVenda: '0.00',
     estoqueAtual: '0',
     estoqueMinimo: '5',
+    estoqueMaximo: '',
     unidade: 'un',
     fotoUrl: '',
     idadeMinima: '18',
@@ -127,6 +138,7 @@ export const CommerceProductsView: React.FC<CommerceProductsViewProps> = ({ modu
       precoVenda: '0.00',
       estoqueAtual: '0',
       estoqueMinimo: '5',
+      estoqueMaximo: '',
       unidade: 'un',
       fotoUrl: '',
       idadeMinima: '18',
@@ -152,6 +164,7 @@ export const CommerceProductsView: React.FC<CommerceProductsViewProps> = ({ modu
       precoVenda: p.precoVenda.toFixed(2),
       estoqueAtual: p.estoqueAtual.toString(),
       estoqueMinimo: p.estoqueMinimo.toString(),
+      estoqueMaximo: p.estoqueMaximo ? p.estoqueMaximo.toString() : '',
       unidade: p.unidade,
       fotoUrl: p.fotoUrl || '',
       idadeMinima: p.idadeMinima.toString(),
@@ -186,6 +199,7 @@ export const CommerceProductsView: React.FC<CommerceProductsViewProps> = ({ modu
         precoVenda: Math.max(0, parseFloat(formData.precoVenda) || 0),
         estoqueAtual: Math.max(0, parseInt(formData.estoqueAtual) || 0),
         estoqueMinimo: Math.max(0, parseInt(formData.estoqueMinimo) || 0),
+        estoqueMaximo: formData.estoqueMaximo ? Math.max(0, parseInt(formData.estoqueMaximo) || 0) : undefined,
         unidade: formData.unidade.trim() || 'un',
         fotoUrl: formData.fotoUrl.trim() || undefined,
         idadeMinima: formData.classificacaoLegal === 'sem_restricao' ? 0 : 18,
@@ -210,12 +224,25 @@ export const CommerceProductsView: React.FC<CommerceProductsViewProps> = ({ modu
     }
   };
 
-  // Delete Product
-  const handleDeleteProduct = async (id: string, nome: string) => {
-    if (!window.confirm(`Tem certeza que deseja excluir o produto "${nome}"?`)) return;
+  const handleOpenHistory = async (id: string) => {
     try {
-      await api.deleteCommerceProduct(id);
-      setSuccessMsg(`Produto "${nome}" removido.`);
+      setLoadingHistory(true);
+      const res = await api.getCommerceProductHistory(id);
+      setHistoryData(res);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Erro ao carregar histórico do produto.');
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  // Delete Product
+  const handleConfirmDeleteProduct = async () => {
+    if (!deleteTarget) return;
+    try {
+      await api.deleteCommerceProduct(deleteTarget.id);
+      setSuccessMsg(`Produto "${deleteTarget.nome}" removido.`);
+      setDeleteTarget(null);
       loadData();
     } catch (err: any) {
       setErrorMsg(err.message || 'Erro ao remover produto.');
@@ -469,6 +496,13 @@ export const CommerceProductsView: React.FC<CommerceProductsViewProps> = ({ modu
                       <td className="py-3 px-4 text-center">
                         <div className="flex items-center justify-center gap-1.5">
                           <button
+                            onClick={() => handleOpenHistory(p.id)}
+                            title="Histórico & Custos"
+                            className="p-1.5 rounded-lg bg-[#1A1633] text-emerald-300 hover:text-white hover:bg-emerald-600/30 transition"
+                          >
+                            <History className="w-3.5 h-3.5" />
+                          </button>
+                          <button
                             onClick={() => handleOpenEdit(p)}
                             title="Editar Produto"
                             className="p-1.5 rounded-lg bg-[#1A1633] text-[#C4B5FD] hover:text-white hover:bg-[#8B5CF6]/30 transition"
@@ -476,7 +510,7 @@ export const CommerceProductsView: React.FC<CommerceProductsViewProps> = ({ modu
                             <Edit2 className="w-3.5 h-3.5" />
                           </button>
                           <button
-                            onClick={() => handleDeleteProduct(p.id, p.nome)}
+                            onClick={() => setDeleteTarget({ id: p.id, nome: p.nome })}
                             title="Excluir Produto"
                             className="p-1.5 rounded-lg bg-[#1A1633] text-rose-400 hover:text-white hover:bg-rose-600/30 transition"
                           >
@@ -647,6 +681,48 @@ export const CommerceProductsView: React.FC<CommerceProductsViewProps> = ({ modu
                   />
                 </div>
 
+                {/* Estoque Máximo */}
+                <div>
+                  <label className="text-xs font-semibold text-[#AAA6B5] mb-1 block">
+                    Estoque Máximo Ideal
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={formData.estoqueMaximo}
+                    onChange={e => setFormData({ ...formData, estoqueMaximo: e.target.value })}
+                    placeholder="Opcional (padrão 3x mín)"
+                    className="w-full bg-[#0A0714] border border-[#262042] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-[#8B5CF6]"
+                  />
+                </div>
+
+                {/* Live Margin / Markup Preview */}
+                {(() => {
+                  const custo = parseFloat(formData.precoCusto) || 0;
+                  const venda = parseFloat(formData.precoVenda) || 0;
+                  const lucro = venda - custo;
+                  const margemVenda = venda > 0 ? (lucro / venda) * 100 : 0;
+                  const markup = custo > 0 ? (lucro / custo) * 100 : 0;
+                  return (
+                    <div className="sm:col-span-2 bg-[#0A0714] border border-[#262042] rounded-xl p-3 grid grid-cols-3 gap-2 text-xs">
+                      <div>
+                        <span className="text-[10px] text-[#716A86] block">Lucro Unitário</span>
+                        <span className={`font-bold tabular-nums ${lucro > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          R$ {lucro.toFixed(2)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-[#716A86] block">Margem s/ Venda</span>
+                        <span className="font-bold text-white tabular-nums">{margemVenda.toFixed(1)}%</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-[#716A86] block">Markup s/ Custo</span>
+                        <span className="font-bold text-[#C4B5FD] tabular-nums">{markup.toFixed(1)}%</span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* Unidade */}
                 <div>
                   <label className="text-xs font-semibold text-[#AAA6B5] mb-1 block">
@@ -735,6 +811,124 @@ export const CommerceProductsView: React.FC<CommerceProductsViewProps> = ({ modu
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* In-UI Delete Confirmation Modal */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#121024] border border-[#262042] rounded-2xl p-6 max-w-sm w-full text-white space-y-4">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-rose-400" />
+              Confirmar Exclusão
+            </h3>
+            <p className="text-xs text-[#AAA6B5]">
+              Tem certeza que deseja excluir o produto <strong className="text-white">{deleteTarget.nome}</strong>?
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                className="px-4 py-2 bg-[#1A1633] text-xs text-[#AAA6B5] rounded-xl"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfirmDeleteProduct}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white rounded-xl"
+              >
+                Excluir Produto
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Product History & Cost Evolution Modal */}
+      {(historyData || loadingHistory) && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#121024] border border-[#262042] rounded-3xl p-6 max-w-2xl w-full max-h-[85vh] overflow-y-auto shadow-2xl relative text-white">
+            <button
+              onClick={() => setHistoryData(null)}
+              className="absolute top-4 right-4 text-[#AAA6B5] hover:text-white p-1"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            {loadingHistory ? (
+              <div className="p-8 text-center text-xs text-[#AAA6B5]">Carregando histórico do produto...</div>
+            ) : historyData ? (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-base font-bold text-white">{historyData.product.nome}</h3>
+                  <p className="text-xs text-[#AAA6B5] font-mono">
+                    SKU: {historyData.product.sku} • Saldo: {historyData.product.estoqueAtual}{' '}
+                    {historyData.product.unidade}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3 text-xs">
+                  <div className="p-3 rounded-xl bg-[#0A0714] border border-[#262042]">
+                    <span className="text-[10px] text-[#716A86] block">Lucro Unitário</span>
+                    <span className="font-bold text-emerald-400 tabular-nums">
+                      R$ {historyData.financeiro.lucroUnitario.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-[#0A0714] border border-[#262042]">
+                    <span className="text-[10px] text-[#716A86] block">Margem Venda</span>
+                    <span className="font-bold text-white tabular-nums">
+                      {historyData.financeiro.margemVendaPercentual.toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-[#0A0714] border border-[#262042]">
+                    <span className="text-[10px] text-[#716A86] block">Markup</span>
+                    <span className="font-bold text-[#C4B5FD] tabular-nums">
+                      {historyData.financeiro.markupPercentual.toFixed(1)}%
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="text-xs font-bold text-white mb-2">Histórico de Custos</h4>
+                  {historyData.custoHistorico.length === 0 ? (
+                    <p className="text-[11px] text-[#716A86]">Nenhuma alteração de custo registrada após o cadastro.</p>
+                  ) : (
+                    <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                      {historyData.custoHistorico.map((entry, idx) => (
+                        <div key={idx} className="p-2 rounded-lg bg-[#0A0714] border border-[#262042] flex justify-between text-[11px]">
+                          <span className="text-[#AAA6B5]">
+                            {new Date(entry.data).toLocaleDateString('pt-BR')} — {entry.motivo || 'Atualização'}
+                          </span>
+                          <span className="font-bold text-amber-300 tabular-nums">
+                            R$ {Number(entry.custo).toFixed(2)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <h4 className="text-xs font-bold text-white mb-2">Últimas Movimentações de Estoque</h4>
+                  {historyData.movements.length === 0 ? (
+                    <p className="text-[11px] text-[#716A86]">Sem movimentações registradas.</p>
+                  ) : (
+                    <div className="space-y-1.5 max-h-44 overflow-y-auto">
+                      {historyData.movements.map((m) => (
+                        <div key={m.id} className="p-2 rounded-lg bg-[#0A0714] border border-[#262042] flex justify-between text-[11px]">
+                          <div>
+                            <span className="font-semibold text-white">{m.tipo}</span> •{' '}
+                            <span className="text-[#AAA6B5]">{m.motivo}</span>
+                          </div>
+                          <span className="font-mono text-[#C4B5FD] tabular-nums">
+                            {m.quantidadeAnterior} → {m.quantidadeNova}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       )}

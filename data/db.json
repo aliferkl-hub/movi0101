@@ -114,7 +114,7 @@
       "name": "Alifer Madeiro (Master)",
       "passwordHash": "0d41f0fa6edf6a155e11c30210922380582497c209bd5f37f05b26171ec05bbb483a36dc67a81c27cc30b02afc7fcbfa0c5fba032e8ead72a7f1cbb52faaf73d",
       "salt": "a0cec8707fba790eb0f4d488782e0bca",
-      "role": "master_owner",
+      "role": "viewer",
       "companyId": null,
       "phone": "11973479473",
       "active": true,
@@ -954,7 +954,7 @@
       "name": "Alifer Madeiro",
       "passwordHash": "",
       "salt": "",
-      "role": "master_owner",
+      "role": "viewer",
       "companyId": null,
       "active": true,
       "createdAt": "2026-11-18T07:45:05.289Z",
@@ -1809,6 +1809,25 @@
   },
   "payments": [],
   "auditLogs": [
+    {
+      "id": "6ba1de1f-d67b-4550-b2b2-5d276d5c7d76",
+      "timestamp": "2026-11-21T03:52:14.842Z",
+      "userId": "anonymous",
+      "userEmail": "alifergael76@gmail.com",
+      "userName": "Anônimo",
+      "acao": "REINICIALIZACAO_MASTER_BLOQUEADA",
+      "detalhes": "Tentativa de sobrescrever ou criar segundo Master Owner via /auth/init-master bloqueada pela regra de singleton.",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "31aac325-6026-452b-88b1-87b569872245",
+      "timestamp": "2026-11-21T03:52:02.196Z",
+      "userId": "312f0489-d5ba-4a34-b493-4ffe7318cf2e",
+      "userEmail": "Alifermadeiro@hotmail.com",
+      "userName": "Alifer Madeiro",
+      "acao": "SINGLETON_MASTER_OWNER_APLICADO",
+      "detalhes": "Duplicidade de privilégios master_owner removida dos registros secundários (perfil ajustado para viewer sem exclusão de usuários e sem alteração da conta oficial)."
+    },
     {
       "id": "f4422fde-33d7-4756-a99c-def492ba3b01",
       "timestamp": "2026-11-20T00:51:50.940Z",

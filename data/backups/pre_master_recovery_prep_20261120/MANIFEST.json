@@ -1,0 +1,34 @@
+{
+  "createdAt": "2026-11-21T04:07:39.502Z",
+  "purpose": "Verifiable pre-preparation backup before Option B Master Owner recovery prep & audit script hardening",
+  "files": {
+    "db.json": {
+      "source": "data/db.json",
+      "bytes": 863644,
+      "sha256": "4853195c6d02942f42d4b70ac07bb9edfe997aa1824ce6e502fd51f90e96068a"
+    },
+    "sessions.json": {
+      "source": "data/sessions.json",
+      "bytes": 19225,
+      "sha256": "c1a027d958040bd4cdf1c079ff324141fabd86905bf5fff62a7b35129f90adf7"
+    },
+    "master_owner_auth_audit.ts.bak": {
+      "source": "server/master_owner_auth_audit.ts",
+      "bytes": 14542,
+      "sha256": "477ccb626243fbbc5415b05f610a82019c3cf1763b36b9ca5c6f15d1439f95cf"
+    }
+  },
+  "counts": {
+    "users": 80,
+    "companies": 24,
+    "auditLogs": 599,
+    "sessions": 119
+  },
+  "officialMasterOwner": {
+    "id": "312f0489-d5ba-4a34-b493-4ffe7318cf2e",
+    "email": "Alifermadeiro@hotmail.com",
+    "role": "master_owner",
+    "active": true,
+    "companyId": null
+  }
+}

@@ -21,6 +21,11 @@ import type {
   CommercialSale,
   CommercialCashSession,
 } from '../db.ts';
+import {
+  ORIGINAL_MASTER_OWNER_ID,
+  ORIGINAL_MASTER_OWNER_EMAIL,
+  assertMasterOwnerSingleton,
+} from '../masterSingleton.ts';
 
 export type CollectionKey = Exclude<keyof DatabaseSchema, 'systemConfig'>;
 
@@ -53,6 +58,15 @@ export const ALL_COLLECTION_KEYS: CollectionKey[] = [
   'pixCharges',
   'commercialTerminals',
   'commercialTerminalTransactions',
+  'commercialAlerts',
+  'commercialReplenishments',
+  'commercialLosses',
+  'commercialInventories',
+  'commercialPeriodClosings',
+  'commercialOrders',
+  'commercialCustomers',
+  'commercialImportBatches',
+  'commercialPilotConfigs',
   'preventionDismissedAlerts',
   'warehouses',
   'warehouseTransfers',
@@ -92,6 +106,15 @@ export const PAYLOAD_COLLECTION_KEYS = [
   'pixCharges',
   'commercialTerminals',
   'commercialTerminalTransactions',
+  'commercialAlerts',
+  'commercialReplenishments',
+  'commercialLosses',
+  'commercialInventories',
+  'commercialPeriodClosings',
+  'commercialOrders',
+  'commercialCustomers',
+  'commercialImportBatches',
+  'commercialPilotConfigs',
   'preventionDismissedAlerts',
   'warehouses',
   'warehouseTransfers',
@@ -303,6 +326,66 @@ function toPayloadRow(key: PayloadCollectionKey, item: any): Record<string, any>
         idempotencyKey: item.idempotencyKey ?? null,
         criadoEm: item.criadoEm || new Date().toISOString(),
       };
+    case 'commercialAlerts':
+      return {
+        ...base,
+        alertKey: item.alertKey || '',
+        status: item.status || 'ativo',
+        prioridade: item.prioridade || 'media',
+        criadoEm: item.criadoEm || new Date().toISOString(),
+      };
+    case 'commercialReplenishments':
+      return {
+        ...base,
+        productId: item.productId || '',
+        status: item.status || 'pendente',
+        criadoEm: item.criadoEm || new Date().toISOString(),
+      };
+    case 'commercialLosses':
+      return {
+        ...base,
+        productId: item.productId || '',
+        tipo: item.tipo || 'avaria',
+        dataPerda: item.dataPerda || new Date().toISOString().slice(0, 10),
+      };
+    case 'commercialInventories':
+      return {
+        ...base,
+        codigo: item.codigo || '',
+        status: item.status || 'em_contagem',
+        dataInicio: item.dataInicio || new Date().toISOString(),
+      };
+    case 'commercialPeriodClosings':
+      return {
+        ...base,
+        codigo: item.codigo || '',
+        dataInicio: item.dataInicio || '',
+        dataFim: item.dataFim || '',
+      };
+    case 'commercialOrders':
+      return {
+        ...base,
+        codigoPedido: item.codigoPedido || '',
+        status: item.status || 'recebido',
+        criadoEm: item.criadoEm || new Date().toISOString(),
+      };
+    case 'commercialCustomers':
+      return {
+        ...base,
+        nome: item.nome || '',
+        ativo: item.ativo !== false,
+      };
+    case 'commercialImportBatches':
+      return {
+        ...base,
+        tipoAlvo: item.tipoAlvo || 'produtos',
+        criadoEm: item.criadoEm || new Date().toISOString(),
+      };
+    case 'commercialPilotConfigs':
+      return {
+        ...base,
+        atualizadoEm: item.atualizadoEm || new Date().toISOString(),
+      };
     case 'preventionDismissedAlerts':
       return {
         ...base,
@@ -423,6 +506,15 @@ export const PAYLOAD_TABLES: Record<PayloadCollectionKey, any> = {
   pixCharges: schema.pixCharges,
   commercialTerminals: schema.commercialTerminals,
   commercialTerminalTransactions: schema.commercialTerminalTransactions,
+  commercialAlerts: schema.commercialAlerts,
+  commercialReplenishments: schema.commercialReplenishments,
+  commercialLosses: schema.commercialLosses,
+  commercialInventories: schema.commercialInventories,
+  commercialPeriodClosings: schema.commercialPeriodClosings,
+  commercialOrders: schema.commercialOrders,
+  commercialCustomers: schema.commercialCustomers,
+  commercialImportBatches: schema.commercialImportBatches,
+  commercialPilotConfigs: schema.commercialPilotConfigs,
   preventionDismissedAlerts: schema.preventionDismissedAlerts,
   warehouses: schema.warehouses,
   warehouseTransfers: schema.warehouseTransfers,
@@ -600,6 +692,14 @@ export async function upsertSystemConfigInTx(
   tx: NodePgDatabase<typeof schema>,
   config: SystemConfig
 ): Promise<void> {
+  if (
+    String(config.masterEmail || '').trim().toLowerCase() !==
+    ORIGINAL_MASTER_OWNER_EMAIL.toLowerCase()
+  ) {
+    throw new Error(
+      `Violação de singleton Master Owner: tentativa de alterar masterEmail para ${config.masterEmail}.`
+    );
+  }
   await tx
     .insert(schema.systemConfig)
     .values({
@@ -635,6 +735,15 @@ export async function upsertCollectionItemInTx(
 ): Promise<void> {
   if (key === 'users') {
     const u = item as User;
+    if (
+      u.role === 'master_owner' &&
+      (u.id !== ORIGINAL_MASTER_OWNER_ID ||
+        String(u.email || '').trim().toLowerCase() !== ORIGINAL_MASTER_OWNER_EMAIL.toLowerCase())
+    ) {
+      throw new Error(
+        `Violação de singleton Master Owner: persistência bloqueada para master_owner não oficial (${u.id}).`
+      );
+    }
     await tx
       .insert(schema.users)
       .values({
@@ -1059,6 +1168,13 @@ export async function preloadCollectionsIntoContext(
 export async function flushPgContext(): Promise<void> {
   const ctx = pgContextStorage.getStore();
   if (!ctx) return;
+
+  if (ctx.loadedKeys.has('users') && Array.isArray(ctx.data.users)) {
+    assertMasterOwnerSingleton(
+      ctx.data.users as User[],
+      ctx.systemConfigLoaded ? ctx.data.systemConfig : { masterEmail: ORIGINAL_MASTER_OWNER_EMAIL }
+    );
+  }
 
   const pg = getPgDb();
   await pg.transaction(async (tx) => {
@@ -1515,6 +1631,17 @@ export function resolveCollectionsForRoute(path: string): {
         'pixCharges',
         'commercialTerminals',
         'commercialTerminalTransactions',
+        'commercialAlerts',
+        'commercialReplenishments',
+        'commercialLosses',
+        'commercialInventories',
+        'commercialPeriodClosings',
+        'commercialOrders',
+        'commercialCustomers',
+        'commercialImportBatches',
+        'commercialPilotConfigs',
+        'financialRecords',
+        'users',
         'companies',
         'notifications',
         'auditLogs',

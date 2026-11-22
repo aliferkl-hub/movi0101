@@ -34,6 +34,7 @@ export const CommercePurchasesView: React.FC<CommercePurchasesViewProps> = ({ mo
   const [purchases, setPurchases] = useState<CommercialPurchase[]>([]);
   const [products, setProducts] = useState<CommercialProduct[]>([]);
   const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<string>('todos');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
@@ -213,6 +214,24 @@ export const CommercePurchasesView: React.FC<CommercePurchasesViewProps> = ({ mo
     0
   );
 
+  const handleUpdatePurchaseStatus = async (id: string, status: 'recebido' | 'cancelado') => {
+    try {
+      setSubmitting(true);
+      setErrorMsg(null);
+      const res = await api.updateCommercePurchaseStatus(id, { status });
+      setSuccessMsg(res.message);
+      loadData();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Erro ao atualizar status da compra.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const filteredPurchases = purchases.filter((p) =>
+    statusFilter === 'todos' ? true : p.status === statusFilter
+  );
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -302,63 +321,112 @@ export const CommercePurchasesView: React.FC<CommercePurchasesViewProps> = ({ mo
 
       {/* Purchases List */}
       {subTab === 'purchases' && (
-        <div className="bg-[#121024] border border-[#262042] rounded-2xl overflow-hidden shadow-xl">
-          {loading ? (
-            <div className="p-12 text-center text-xs text-[#AAA6B5]">Carregando pedidos de compra...</div>
-          ) : purchases.length === 0 ? (
-            <div className="p-12 text-center text-[#AAA6B5] space-y-2">
-              <FileText className="w-10 h-10 mx-auto text-[#262042]" />
-              <p className="text-sm font-semibold text-white">Nenhuma compra registrada ainda</p>
-              <p className="text-xs">
-                Registre compras com itens e custos para dar entrada automática nas mercadorias no estoque.
-              </p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="border-b border-[#262042] bg-[#0A0714]/60 text-[11px] font-bold text-[#AAA6B5] uppercase">
-                    <th className="py-3 px-4">Data Compra</th>
-                    <th className="py-3 px-4">Fornecedor</th>
-                    <th className="py-3 px-4">Nota / Fatura</th>
-                    <th className="py-3 px-4">Itens Recebidos</th>
-                    <th className="py-3 px-4 text-right">Valor Total</th>
-                    <th className="py-3 px-4 text-center">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#262042]/50">
-                  {purchases.map(p => (
-                    <tr key={p.id} className="hover:bg-[#1A1633]/30 transition">
-                      <td className="py-3 px-4 text-[#AAA6B5] whitespace-nowrap">
-                        {new Date(p.dataCompra).toLocaleDateString('pt-BR')}
-                      </td>
-                      <td className="py-3 px-4 font-bold text-white">{p.fornecedorNome}</td>
-                      <td className="py-3 px-4 font-mono text-[11px] text-[#C4B5FD]">
-                        {p.numeroNota || 'S/N'}
-                      </td>
-                      <td className="py-3 px-4 text-[#AAA6B5]">
-                        <div className="space-y-0.5">
-                          {p.itens.map((it, idx) => (
-                            <div key={idx} className="text-[11px]">
-                              • {it.quantidade}x {it.nome} (R$ {it.custoUnitario.toFixed(2)} un)
-                            </div>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 text-right font-black text-emerald-400">
-                        R$ {p.valorTotal.toFixed(2)}
-                      </td>
-                      <td className="py-3 px-4 text-center">
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                          {p.status === 'recebido' ? 'Estoque Creditado' : p.status}
-                        </span>
-                      </td>
+        <div className="space-y-3">
+          <div className="flex items-center justify-end gap-2">
+            <span className="text-xs text-[#AAA6B5]">Filtrar status:</span>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="bg-[#121024] border border-[#262042] rounded-xl px-3 py-1.5 text-xs text-white"
+            >
+              <option value="todos">Todos os Status</option>
+              <option value="aprovada">Aprovadas (Aguard. Recebimento)</option>
+              <option value="pendente">Pendentes</option>
+              <option value="recebido">Recebidas (Estoque Creditado)</option>
+              <option value="cancelado">Canceladas</option>
+            </select>
+          </div>
+          <div className="bg-[#121024] border border-[#262042] rounded-2xl overflow-hidden shadow-xl">
+            {loading ? (
+              <div className="p-12 text-center text-xs text-[#AAA6B5]">Carregando pedidos de compra...</div>
+            ) : filteredPurchases.length === 0 ? (
+              <div className="p-12 text-center text-[#AAA6B5] space-y-2">
+                <FileText className="w-10 h-10 mx-auto text-[#262042]" />
+                <p className="text-sm font-semibold text-white">Nenhuma compra registrada para este filtro</p>
+                <p className="text-xs">
+                  Registre compras com itens e custos para dar entrada automática nas mercadorias no estoque.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-[#262042] bg-[#0A0714]/60 text-[11px] font-bold text-[#AAA6B5] uppercase">
+                      <th className="py-3 px-4">Data Compra</th>
+                      <th className="py-3 px-4">Fornecedor</th>
+                      <th className="py-3 px-4">Nota / Origem</th>
+                      <th className="py-3 px-4">Itens</th>
+                      <th className="py-3 px-4 text-right">Valor Total</th>
+                      <th className="py-3 px-4 text-center">Status & Ações</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                  </thead>
+                  <tbody className="divide-y divide-[#262042]/50">
+                    {filteredPurchases.map(p => (
+                      <tr key={p.id} className="hover:bg-[#1A1633]/30 transition">
+                        <td className="py-3 px-4 text-[#AAA6B5] whitespace-nowrap">
+                          {new Date(p.dataCompra).toLocaleDateString('pt-BR')}
+                        </td>
+                        <td className="py-3 px-4 font-bold text-white">{p.fornecedorNome}</td>
+                        <td className="py-3 px-4 font-mono text-[11px] text-[#C4B5FD]">
+                          <div>{p.numeroNota || 'S/N'}</div>
+                          {p.sugestaoReposicaoId && (
+                            <span className="inline-block mt-0.5 text-[9px] px-1.5 py-0.5 rounded bg-[#8B5CF6]/20 text-[#C4B5FD]">
+                              Via Reposição
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-[#AAA6B5]">
+                          <div className="space-y-0.5">
+                            {p.itens.map((it, idx) => (
+                              <div key={idx} className="text-[11px]">
+                                • {it.quantidade}x {it.nome} (R$ {it.custoUnitario.toFixed(2)} un)
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 text-right font-black text-emerald-400 tabular-nums">
+                          R$ {p.valorTotal.toFixed(2)}
+                        </td>
+                        <td className="py-3 px-4 text-center space-y-1.5">
+                          <div>
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                p.status === 'recebido'
+                                  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                                  : p.status === 'cancelado'
+                                  ? 'bg-rose-500/20 text-rose-400 border-rose-500/30'
+                                  : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                              }`}
+                            >
+                              {p.status === 'recebido' ? 'Estoque Creditado' : p.status}
+                            </span>
+                          </div>
+                          {p.status !== 'recebido' && p.status !== 'cancelado' && (
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                onClick={() => handleUpdatePurchaseStatus(p.id, 'recebido')}
+                                disabled={submitting}
+                                className="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold"
+                              >
+                                Receber Estoque
+                              </button>
+                              <button
+                                onClick={() => handleUpdatePurchaseStatus(p.id, 'cancelado')}
+                                disabled={submitting}
+                                className="px-2 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white text-[10px] font-semibold"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       )}
 

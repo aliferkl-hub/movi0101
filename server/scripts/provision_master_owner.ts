@@ -1,6 +1,11 @@
 import crypto from 'crypto';
 import { db, type User } from '../db.ts';
 import { isPostgresActive } from '../persistence/repository.ts';
+import {
+  ORIGINAL_MASTER_OWNER_ID,
+  ORIGINAL_MASTER_OWNER_EMAIL,
+  getOfficialMasterEmailNormalized,
+} from '../masterSingleton.ts';
 
 export interface ProvisionMasterOwnerInput {
   name: string;
@@ -20,6 +25,22 @@ export function provisionMasterOwnerInJson(input: ProvisionMasterOwnerInput): {
   const normalizedEmail = input.email.trim().toLowerCase();
   if (!normalizedEmail || !input.name.trim()) {
     throw new Error('Nome e e-mail são obrigatórios.');
+  }
+
+  const officialEmail = getOfficialMasterEmailNormalized(db.systemConfig);
+  const existingMasters = db.users.filter((u) => u.role === 'master_owner');
+
+  if (existingMasters.length > 0 || normalizedEmail !== officialEmail || normalizedEmail !== ORIGINAL_MASTER_OWNER_EMAIL.toLowerCase()) {
+    db.logAudit({
+      userId: ORIGINAL_MASTER_OWNER_ID,
+      userEmail: normalizedEmail,
+      userName: input.name.trim(),
+      acao: 'CRIACAO_MASTER_OWNER_BLOQUEADA',
+      detalhes: 'Tentativa de provisionar segundo ou não oficial Master Owner bloqueada pela regra de singleton.',
+    });
+    throw new Error(
+      `Operação bloqueada: somente a conta oficial (${ORIGINAL_MASTER_OWNER_EMAIL}) pode possuir privilégios master_owner.`
+    );
   }
 
   const existing = db.users.find(
@@ -44,8 +65,8 @@ export function provisionMasterOwnerInJson(input: ProvisionMasterOwnerInput): {
 
   // Sem senha fixa, sem hash fixo e sem credenciais em código: aguarda primeiro acesso seguro.
   const newUser: User = {
-    id: crypto.randomUUID(),
-    email: normalizedEmail,
+    id: ORIGINAL_MASTER_OWNER_ID,
+    email: ORIGINAL_MASTER_OWNER_EMAIL,
     name: input.name.trim(),
     passwordHash: '',
     salt: '',
@@ -65,7 +86,7 @@ export function provisionMasterOwnerInJson(input: ProvisionMasterOwnerInput): {
     userName: newUser.name,
     acao: 'CRIACAO_MASTER_OWNER',
     detalhes:
-      'Novo administrador Master Owner provisionado em modo JSON com primeiro acesso pendente (sem senha fixa).',
+      'Master Owner oficial provisionado em modo JSON com primeiro acesso pendente (sem senha fixa).',
   });
 
   return {
