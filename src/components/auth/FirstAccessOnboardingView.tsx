@@ -268,7 +268,7 @@ export const FirstAccessOnboardingView: React.FC = () => {
                 </button>
               </div>
             </div>
-          ) : serverStatus?.onboardingCompleted ? (
+          ) : !isMaster && serverStatus?.onboardingCompleted ? (
             <div className="bg-[#121024] border border-[#2D2644] rounded-3xl p-8 space-y-6 shadow-2xl">
               <div className="flex items-start gap-4">
                 <div className="w-12 h-12 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
@@ -399,6 +399,9 @@ export const FirstAccessOnboardingView: React.FC = () => {
                     Você está executando o onboarding autenticado como{' '}
                     <strong>Master Owner</strong>. Sua conta e sessão Master permanecerão
                     integralmente preservadas ao concluir.
+                    {serverStatus?.onboardingCompleted
+                      ? ' (O primeiro acesso público já está bloqueado; apenas o Master Owner pode cadastrar por aqui.)'
+                      : ''}
                   </span>
                 </div>
               )}
@@ -613,6 +616,8 @@ export const FirstAccessOnboardingView: React.FC = () => {
                       type="button"
                       onClick={() => {
                         setAdminMode('create');
+                        setAdminPassword('');
+                        setConfirmPassword('');
                         setError(null);
                       }}
                       className={`p-3.5 rounded-xl border text-left transition flex items-start gap-3 ${
@@ -634,6 +639,8 @@ export const FirstAccessOnboardingView: React.FC = () => {
                       type="button"
                       onClick={() => {
                         setAdminMode('link');
+                        setAdminPassword('');
+                        setConfirmPassword('');
                         setError(null);
                       }}
                       className={`p-3.5 rounded-xl border text-left transition flex items-start gap-3 ${
@@ -652,10 +659,8 @@ export const FirstAccessOnboardingView: React.FC = () => {
                     </button>
                   </div>
 
-                  {adminMode === 'link' &&
-                    isMaster &&
-                    serverStatus?.eligibleAdmins &&
-                    serverStatus.eligibleAdmins.length > 0 && (
+                  {adminMode === 'link' && isMaster && (
+                    serverStatus?.eligibleAdmins && serverStatus.eligibleAdmins.length > 0 ? (
                       <div>
                         <label className="block text-xs font-medium text-[#AAA6B5] mb-1">
                           Usuários Elegíveis Sem Empresa Vinculada
@@ -673,7 +678,14 @@ export const FirstAccessOnboardingView: React.FC = () => {
                           ))}
                         </select>
                       </div>
-                    )}
+                    ) : (
+                      <div className="p-3 rounded-xl bg-[#1D1B24] border border-[#393442] text-[11px] text-[#AAA6B5]">
+                        Nenhum usuário elegível sem vínculo empresarial foi encontrado no momento.
+                        Utilize <strong className="text-[#C4B5FD]">Cadastrar Novo Administrador</strong>{' '}
+                        para criar o primeiro administrador desta empresa.
+                      </div>
+                    )
+                  )}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     {adminMode === 'create' && (
@@ -768,19 +780,25 @@ export const FirstAccessOnboardingView: React.FC = () => {
                       </>
                     )}
 
-                    {adminMode === 'link' && !isMaster && (
+                    {adminMode === 'link' && (
                       <div className="sm:col-span-2">
                         <label className="block text-xs font-medium text-[#AAA6B5] mb-1">
-                          Senha Atual do Administrador (Comprovação de Titularidade) *
+                          {isMaster
+                            ? 'Senha Atual do Administrador (Comprovação de Titularidade — opcional se autorizado pelo Master Owner)'
+                            : 'Senha Atual do Administrador (Comprovação de Titularidade) *'}
                         </label>
                         <div className="relative">
                           <Lock className="w-4 h-4 text-[#AAA6B5] absolute left-3 top-3" />
                           <input
                             type="password"
-                            required
+                            required={!isMaster}
                             value={adminPassword}
                             onChange={(e) => setAdminPassword(e.target.value)}
-                            placeholder="Senha atual da conta a vincular"
+                            placeholder={
+                              isMaster
+                                ? 'Informe para validar a senha ou deixe em branco como Master Owner'
+                                : 'Senha atual da conta a vincular'
+                            }
                             className="w-full bg-[#1D1B24] border border-[#393442] rounded-xl pl-9 pr-3 py-2.5 text-sm text-[#F5F3FA] focus:outline-none focus:border-[#8B5CF6]"
                           />
                         </div>

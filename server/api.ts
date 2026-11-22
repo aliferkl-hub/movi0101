@@ -149,7 +149,16 @@ const authenticate = async (req: AuthRequest, res: Response, next: NextFunction)
         req.company = company;
       }
     } else if (isOfficialMasterOwner(user, db.systemConfig)) {
-      req.company = ensureDefaultCompany(req);
+      const requestedCompanyId =
+        (typeof req.headers['x-company-id'] === 'string' && req.headers['x-company-id'].trim()) ||
+        (typeof req.query?.companyId === 'string' && req.query.companyId.trim()) ||
+        (typeof req.body?.companyId === 'string' && req.body.companyId.trim()) ||
+        '';
+      if (requestedCompanyId) {
+        req.company = db.companies.find(c => c.id === requestedCompanyId);
+      } else if (db.companies.length > 0) {
+        req.company = db.companies[0];
+      }
     }
     next();
   } catch (err) {
@@ -376,8 +385,15 @@ apiRouter.post('/onboarding/complete', async (req: Request, res: Response, next:
     }
     const isMasterCaller = isOfficialMasterOwner(callerUser, db.systemConfig);
 
+    if (callerUser && !isMasterCaller) {
+      res.status(403).json({
+        error: 'Apenas o Master Owner autenticado ou o primeiro acesso público pendente pode executar esta configuração inicial.',
+      });
+      return;
+    }
+
     const snap = getOnboardingStatusSnapshot();
-    if (snap.onboardingCompleted) {
+    if (snap.onboardingCompleted && !isMasterCaller) {
       res.status(403).json({
         error: 'A configuração inicial já foi concluída. O primeiro acesso público está bloqueado.',
         code: 'ONBOARDING_ALREADY_COMPLETED',
@@ -386,9 +402,13 @@ apiRouter.post('/onboarding/complete', async (req: Request, res: Response, next:
     }
 
     const body = req.body || {};
-    if (typeof body.role === 'string' && body.role.trim().toLowerCase() === 'master_owner') {
+    if (
+      typeof body.role === 'string' &&
+      body.role.trim() !== '' &&
+      body.role.trim().toLowerCase() !== 'company_admin'
+    ) {
       res.status(403).json({
-        error: 'Não é permitido criar ou atribuir privilégios de Master Owner pelo onboarding.',
+        error: 'Não é permitido criar ou atribuir privilégios de Master Owner ou outro perfil pelo onboarding.',
       });
       return;
     }
@@ -433,13 +453,11 @@ apiRouter.post('/onboarding/complete', async (req: Request, res: Response, next:
       return;
     }
 
-    // Never allow touching, linking, or impersonating the Master Owner account
+    // Never allow touching, linking, or impersonating the Master Owner user account
     const officialEmailLower = getOfficialMasterEmailNormalized(db.systemConfig);
     const isMasterTargetEmail =
       adminEmail === officialEmailLower ||
       adminEmail === ORIGINAL_MASTER_OWNER_EMAIL.toLowerCase() ||
-      companyEmail === officialEmailLower ||
-      companyEmail === ORIGINAL_MASTER_OWNER_EMAIL.toLowerCase() ||
       db.users.some(
         (u) =>
           (u.role === 'master_owner' || u.id === ORIGINAL_MASTER_OWNER_ID) &&
@@ -527,7 +545,8 @@ apiRouter.post('/onboarding/complete', async (req: Request, res: Response, next:
       if (
         existingUser.role === 'master_owner' ||
         existingUser.id === ORIGINAL_MASTER_OWNER_ID ||
-        existingUser.email.trim().toLowerCase() === ORIGINAL_MASTER_OWNER_EMAIL.toLowerCase()
+        existingUser.email.trim().toLowerCase() === ORIGINAL_MASTER_OWNER_EMAIL.toLowerCase() ||
+        existingUser.email.trim().toLowerCase() === officialEmailLower
       ) {
         res.status(403).json({ error: 'Não é permitido vincular a conta Master Owner.' });
         return;
@@ -542,16 +561,16 @@ apiRouter.post('/onboarding/complete', async (req: Request, res: Response, next:
         });
         return;
       }
-      if (!isMasterCaller) {
-        if (existingUser.mustSetPassword || !existingUser.passwordHash || !existingUser.salt) {
-          res.status(403).json({
-            error: 'Esta conta ainda possui primeiro acesso de senha pendente. Defina a senha antes de vinculá-la.',
-          });
-          return;
-        }
+      if (existingUser.mustSetPassword || !existingUser.passwordHash || !existingUser.salt) {
+        res.status(403).json({
+          error: 'Esta conta ainda possui primeiro acesso de senha pendente. Defina a senha antes de vinculá-la.',
+        });
+        return;
+      }
+      if (!isMasterCaller || adminPassword.length > 0) {
         if (!adminPassword || !verifyPassword(adminPassword, existingUser.passwordHash, existingUser.salt)) {
           res.status(401).json({
-            error: 'Senha atual do administrador inválido para comprovação de vínculo.',
+            error: 'Senha atual do administrador inválida para comprovação de titularidade.',
           });
           return;
         }
@@ -1933,7 +1952,15 @@ apiRouter.put('/master/config', authenticate, requireMaster, async (req: AuthReq
 apiRouter.get('/master/onboarding', authenticate, requireMaster, (_req: AuthRequest, res: Response) => {
   const snap = getOnboardingStatusSnapshot();
   const eligibleAdmins = db.users
-    .filter((u) => u.active && u.role !== 'master_owner' && u.id !== ORIGINAL_MASTER_OWNER_ID && !u.companyId)
+    .filter(
+      (u) =>
+        u.active &&
+        u.role !== 'master_owner' &&
+        u.id !== ORIGINAL_MASTER_OWNER_ID &&
+        !u.companyId &&
+        !u.mustSetPassword &&
+        Boolean(u.passwordHash && u.salt)
+    )
     .map((u) => ({
       id: u.id,
       name: u.name,
@@ -5514,7 +5541,7 @@ apiRouter.get('/notifications', authenticate, (req: AuthRequest, res: Response) 
     res.status(403).json({ error: 'Acesso negado às notificações operacionais.' });
     return;
   }
-  const companyId = getEffectiveCompanyId(req);
+  const companyId = isMaster ? '' : getEffectiveCompanyId(req);
   const list = db.notifications.filter(n => isMaster || !n.companyId || n.companyId === companyId);
   res.json({ notifications: list.slice(0, 50) });
 });
@@ -5527,7 +5554,7 @@ apiRouter.post('/notifications/:id/read', authenticate, (req: AuthRequest, res: 
     return;
   }
   const { id } = req.params;
-  const companyId = getEffectiveCompanyId(req);
+  const companyId = isMaster ? '' : getEffectiveCompanyId(req);
   const n = db.notifications.find(notif => notif.id === id);
   if (n) {
     if (n.companyId && n.companyId !== companyId && !isMaster) {
@@ -5547,7 +5574,7 @@ apiRouter.post('/notifications/read-all', authenticate, (req: AuthRequest, res: 
     res.status(403).json({ error: 'Acesso negado às notificações operacionais.' });
     return;
   }
-  const companyId = getEffectiveCompanyId(req);
+  const companyId = isMaster ? '' : getEffectiveCompanyId(req);
   db.notifications.forEach(n => {
     if (isMaster || !n.companyId || n.companyId === companyId) {
       n.lida = true;
